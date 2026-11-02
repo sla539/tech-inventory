@@ -2,6 +2,7 @@ import {initializeApp} from "https://www.gstatic.com/firebasejs/10.12.2/firebase
 import {getFirestore,collection,doc,setDoc,addDoc,deleteDoc,onSnapshot,getDoc,query,where} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import {getAuth,signInWithEmailAndPassword,createUserWithEmailAndPassword,sendPasswordResetEmail,onAuthStateChanged,signOut} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import {firebaseConfig,ADMIN_UID,INV_DAYS,SITE_NAME} from "./config.js";
+import {SEED_DEVICES,SEED_STOCK} from "./seed.js";
 
 const fapp=initializeApp(firebaseConfig),fdb=getFirestore(fapp),auth=getAuth(fapp);
 
@@ -13,7 +14,8 @@ const ROLES={pending:"очікує",viewer:"перегляд",tech:"технік
 const EV={checkout:"Видано",checkin:"Прийнято",status:"Статус",inventory:"Звірено",work:"Робота",edit:"Зміна"};
 
 /* ---------- стан ---------- */
-const S={devices:[],events:[],users:[],files:[]};
+const S={devices:[],events:[],users:[],files:[],stock:[]};
+const LOADED={dev:false,stk:false};
 let ME=null,ST="load",ERR="",REG=null,NOPROF=false,started=false,TAB="info",lastKey="";
 const freshF=()=>({q:"",status:"",loc:"",resp:"",model:""});
 let F=freshF(),LB=new Set(),R={from:"",to:"",kind:""};
@@ -106,8 +108,11 @@ function dash(){
   const unv=d.filter(x=>!x.lastInv||new Date(x.lastInv)<lim).length;
   const grp=key=>{const m={};d.forEach(x=>{const k=x[key]||"—";m[k]=(m[k]||0)+1});return Object.entries(m).sort((a,b)=>b[1]-a[1]).slice(0,8)};
   const pr=d.filter(x=>x.kind==="printer").length,lp=d.length-pr;
-  return ph("Статистика","📊","Стан техніки та розташування")+
-  `<div class=kg><div class=kt><span class=mu>Усього</span><b>${d.length}</b></div><div class="kt k2"><span class=mu>В роботі</span><b>${n("в роботі")}</b></div><div class=kt><span class=mu>На складі</span><b>${n("на складі")}</b></div><div class="kt k3"><span class=mu>В ремонті</span><b>${n("в ремонті")}</b></div><div class="kt k4"><span class=mu>Не звірено (${INV_DAYS} дн.)</span><b>${unv}</b></div></div>
+  const low=S.stock.filter(s=>num(s.qty)<=num(s.min)).length;
+  const needDev=LOADED.dev&&!SEED_DEVICES.some(x=>d.some(y=>y.id===x.id)),needStk=LOADED.stk&&!SEED_STOCK.some(x=>S.stock.some(y=>y.id===x.id));
+  const impCard=isAdmin()&&(needDev||needStk)?`<div class=card style="border-color:var(--ac)"><b>Початкові дані з таблиці</b><p class=mu>Можна імпортувати: ${needDev?"принтерів — "+SEED_DEVICES.length:""}${needDev&&needStk?", ":""}${needStk?"матеріалів — "+SEED_STOCK.length:""}. Повторне натискання дублів не створює.</p><button class=p data-a=imp>⬇ Імпортувати</button></div>`:"";
+  return ph("Статистика","📊","Стан техніки та розташування")+impCard+
+  `<div class=kg><div class=kt><span class=mu>Усього</span><b>${d.length}</b></div><div class="kt k3"><span class=mu>Мало на складі</span><b>${low}</b></div><div class="kt k2"><span class=mu>В роботі</span><b>${n("в роботі")}</b></div><div class=kt><span class=mu>На складі</span><b>${n("на складі")}</b></div><div class="kt k3"><span class=mu>В ремонті</span><b>${n("в ремонті")}</b></div><div class="kt k4"><span class=mu>Не звірено (${INV_DAYS} дн.)</span><b>${unv}</b></div></div>
   <p class=mu>Принтерів: ${pr}, ноутбуків: ${lp}.</p>
   <div class=grid2><div class=card><b>За розташуванням</b>${hbars(grp("loc"))}</div><div class=card><b>За моделями</b>${hbars(grp("model"))}</div></div>`;
 }
@@ -164,6 +169,17 @@ function reports(){
   <div class=grid2>${gt("За пристроями",grp(e=>dname(dv(e.did))+(dv(e.did)&&dv(e.did).tag?" ("+dv(e.did).tag+")":"")))}${gt("За відповідальними",grp(e=>e.resp))}</div>
   <div class=card><b>Усі роботи</b><div class=ch><table><tr><th>Дата</th><th>Пристрій</th><th>Робота</th><th>Відповідальний</th><th>Сума</th></tr>${ws.map(e=>`<tr><td>${fmt(e.date)}</td><td><a href="#/d/${esc(e.did)}">${esc(dname(dv(e.did)))}</a></td><td>${esc(e.text)}</td><td>${esc(e.resp||"—")}</td><td>${e.cost?uah(e.cost):""}</td></tr>`).join("")||"<tr><td class=mu colspan=5>Немає робіт за цей період</td></tr>"}</table></div></div>`;
 }
+function stockPage(){
+  const ce=canEdit(),l=[...S.stock].sort((a,b)=>a.name.localeCompare(b.name,"uk"));
+  const lowN=l.filter(s=>num(s.qty)<=num(s.min)).length;
+  return ph("Склад","📦","Витратні матеріали та їхні залишки")+
+  `<div class=row style="margin-bottom:8px">${ce?`<button class=p data-a=adds>＋ Матеріал</button>`:""}</div>
+  <p class=mu>Позицій: ${l.length}${lowN?` · <span class="tag e">мало: ${lowN}</span>`:""}. Позначка «мало» з'являється, коли залишок не більший за мінімум.</p>
+  <div class=card><div class=ch><table><tr><th>Назва</th><th>К-сть</th><th>Мін.</th><th></th></tr>${l.map(s=>`<tr><td>${esc(s.name)}${num(s.qty)<=num(s.min)?' <span class="tag e">мало</span>':""}</td><td><b>${esc(s.qty)}</b></td><td class=mu>${esc(s.min)}</td><td>${ce?`<div class=row style="flex-wrap:nowrap;justify-content:flex-end;gap:4px"><button data-a=stm data-id="${esc(s.id)}" aria-label="Зменшити на 1" title="Списати 1">−1</button><button data-a=stp data-id="${esc(s.id)}" aria-label="Збільшити на 1" title="Додати 1">+1</button><button data-a=edits data-id="${esc(s.id)}" aria-label="Редагувати" title="Редагувати">✎</button></div>`:""}</td></tr>`).join("")||"<tr><td class=mu colspan=4>Матеріалів ще немає</td></tr>"}</table></div></div>`;
+}
+function formStock(s={}){
+  dlg(`<h3>${s.id?"Редагувати матеріал":"Новий матеріал"}</h3>${fld("Назва","k1",s.name,"text","maxlength=100")}<div class=row>${fld("Кількість","k2",s.qty??0,"number","min=0 step=any")}${fld("Мінімальний залишок","k3",s.min??1,"number","min=0 step=any")}</div><div class=row style="margin-top:12px"><button class=p data-a=saves data-id="${esc(s.id||"")}">Зберегти</button>${s.id&&isAdmin()?`<button class=d data-a=dels data-id="${esc(s.id)}">Видалити</button>`:""}<button data-a=x>Скасувати</button></div>`);
+}
 function labels(){
   const ds=[...S.devices].sort((a,b)=>(a.kind+a.model).localeCompare(b.kind+b.model,"uk"));
   return ph("Етикетки","🏷️","Друк QR-наклейок: QR відкриває картку пристрою")+
@@ -193,7 +209,7 @@ function render(){
   watchFiles(r.page==="d"&&canView()?r.id:null);
   $("#who").textContent=(ME.name||ME.email)+" · "+(ROLES[ME.role]||ME.role);
   const pend=S.users.filter(u=>u.role==="pending"&&u.active).length;
-  const items=[["dash","📊","Статистика"],["printers","🖨️","Принтери"],["laptops","💻","Ноутбуки"]];
+  const items=[["dash","📊","Статистика"],["printers","🖨️","Принтери"],["laptops","💻","Ноутбуки"],["stock","📦","Склад"]];
   if(canEdit())items.push(["labels","🏷️","Етикетки"]);
   items.push(["reports","📈","Звіти"]);
   if(isAdmin())items.push(["users","👤","Користувачі"+(pend?" ("+pend+")":"")]);
@@ -204,6 +220,7 @@ function render(){
   else if(r.page==="printers")h=listPage("printer");
   else if(r.page==="laptops")h=listPage("laptop");
   else if(r.page==="d")h=devPage(r.id);
+  else if(r.page==="stock")h=stockPage();
   else if(r.page==="reports")h=reports();
   else if(r.page==="labels"&&canEdit())h=labels();
   else if(r.page==="users"&&isAdmin())h=usersPage();
@@ -255,9 +272,9 @@ document.addEventListener("click",async e=>{
   if(a==="x"){d.close();return}
   if(a==="print"){window.print();return}
   /* усе нижче потребує прав */
-  const needEdit=["add","savedev","co","ci","st","wk","inv","lab","edit","saveco","saveci","savest","savewk","delf","lball","lbnone","lbprint"];
+  const needEdit=["adds","edits","saves","stp","stm","add","savedev","co","ci","st","wk","inv","lab","edit","saveco","saveci","savest","savewk","delf","lball","lbnone","lbprint"];
   if(needEdit.includes(a)&&!canEdit())return alert("Ця дія доступна лише техніку або адміністратору.");
-  if(["del","tgl"].includes(a)&&!isAdmin())return alert("Ця дія доступна лише адміністратору.");
+  if(["del","tgl","dels","imp"].includes(a)&&!isAdmin())return alert("Ця дія доступна лише адміністратору.");
   const dev=id?dv(id):null;
   try{
   if(a==="add")formDev({kind:b.dataset.k});
@@ -326,6 +343,34 @@ document.addEventListener("click",async e=>{
   else if(a==="lball"){S.devices.forEach(x=>LB.add(x.id));render()}
   else if(a==="lbnone"){LB.clear();render()}
   else if(a==="lbprint")printLabels([...LB]);
+  else if(a==="adds")formStock();
+  else if(a==="edits"){const s=S.stock.find(x=>x.id===id);if(s)formStock(s)}
+  else if(a==="saves"){
+    const old=id?S.stock.find(x=>x.id===id):null,nm=val("k1").slice(0,100),qty=Math.max(0,num(val("k2"))),mn=Math.max(0,num(val("k3")));
+    if(!nm)return alert("Вкажіть назву");
+    if(S.stock.some(x=>x.id!==id&&x.name.trim().toLowerCase()===nm.toLowerCase()))return alert("Матеріал з такою назвою вже є");
+    await setDoc(doc(fdb,"stock",id||newId()),{name:nm,qty,min:mn,ts:old?old.ts:Date.now()});d.close();
+  }
+  else if(a==="dels"){if(confirm("Видалити матеріал?")){await deleteDoc(doc(fdb,"stock",id));d.close()}}
+  else if(a==="stp"||a==="stm"){
+    const s=S.stock.find(x=>x.id===id);if(!s)return;
+    const q=Math.max(0,Math.round((num(s.qty)+(a==="stp"?1:-1))*100)/100);
+    if(q===num(s.qty))return;
+    await setDoc(doc(fdb,"stock",id),{qty:q},{merge:true});
+  }
+  else if(a==="imp"){
+    if(!LOADED.dev||!LOADED.stk)return alert("Дані ще завантажуються, зачекайте кілька секунд.");
+    const needDev=!SEED_DEVICES.some(x=>S.devices.some(y=>y.id===x.id)),needStk=!SEED_STOCK.some(x=>S.stock.some(y=>y.id===x.id));
+    const nd=needDev?SEED_DEVICES:[],ns=needStk?SEED_STOCK:[];
+    if(!nd.length&&!ns.length)return alert("Усе вже імпортовано.");
+    if(!confirm("Імпортувати: принтерів — "+nd.length+", матеріалів — "+ns.length+"?"))return;
+    b.disabled=true;const ts=Date.now();
+    try{
+      for(const [i,x] of nd.entries()){const {id:sid,...o}=x;await setDoc(doc(fdb,"devices",sid),{...o,lastInv:"",ts:ts+i})}
+      for(const [i,x] of ns.entries()){const {id:sid,...o}=x;await setDoc(doc(fdb,"stock",sid),{...o,ts:ts+i})}
+      alert("Готово. Імпортовано: принтерів — "+nd.length+", матеріалів — "+ns.length+".");
+    }finally{b.disabled=false}
+  }
   else if(a==="tgl"){const u=S.users.find(x=>x.id===id);if(u&&id!==ADMIN_UID&&id!==ME.uid)await setDoc(doc(fdb,"users",id),{active:!u.active},{merge:true})}
   }catch(x){fail(x)}
 });
@@ -347,7 +392,8 @@ window.addEventListener("hashchange",()=>{if(ST==="ok")render()});
 function start(){
   if(started)return;started=true;
   if(canView()){
-    onSnapshot(collection(fdb,"devices"),sn=>{S.devices=sn.docs.map(d=>({...d.data(),id:d.id}));render()},e=>alert("Помилка доступу до бази: "+(e.code||e.message)));
+    onSnapshot(collection(fdb,"devices"),sn=>{S.devices=sn.docs.map(d=>({...d.data(),id:d.id}));LOADED.dev=true;render()},e=>alert("Помилка доступу до бази: "+(e.code||e.message)));
+    onSnapshot(collection(fdb,"stock"),sn=>{S.stock=sn.docs.map(d=>({...d.data(),id:d.id}));LOADED.stk=true;render()},()=>{});
     onSnapshot(collection(fdb,"events"),sn=>{S.events=sn.docs.map(d=>({...d.data(),id:d.id}));render()},()=>{});
   }
   if(isAdmin())onSnapshot(collection(fdb,"users"),sn=>{S.users=sn.docs.map(d=>({...d.data(),id:d.id}));render()},()=>{});
