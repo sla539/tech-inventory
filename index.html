@@ -144,12 +144,12 @@ import {getAuth,signInWithEmailAndPassword,createUserWithEmailAndPassword,sendPa
 // Налаштування сайту. Заповніть значення за інструкцією (кроки 5 і 6).
 // Дані firebaseConfig не є таємницею: безпеку забезпечують правила Firestore (firestore.rules).
 const firebaseConfig = {
-  apiKey: "AIzaSyD_5HeLJho_5-vrkieJV8SX73Eti_hIJt4",
-  authDomain: "printers-22.firebaseapp.com",
-  projectId: "printers-22",
-  storageBucket: "printers-22.firebasestorage.app",
-  messagingSenderId: "76300889204",
-  appId: "1:76300889204:web:4895c933e719b734c8b521"
+  apiKey: "ВСТАВТЕ_apiKey",
+  authDomain: "ВАШ-ПРОЄКТ.firebaseapp.com",
+  projectId: "ВАШ-ПРОЄКТ",
+  storageBucket: "ВАШ-ПРОЄКТ.firebasestorage.app",
+  messagingSenderId: "ВСТАВТЕ",
+  appId: "ВСТАВТЕ"
 };
 
 // UID головного адміністратора (Firebase → Authentication → Users → User UID).
@@ -750,12 +750,20 @@ function reports(){
   <div class=card><b>Усі роботи</b><div class=ch><table><tr><th>Дата</th><th>Пристрій</th><th>Робота</th><th>Відповідальний</th><th>Сума</th></tr>${ws.map(e=>`<tr><td>${fmt(e.date)}</td><td><a href="#/d/${esc(e.did)}">${esc(dname(dv(e.did)))}</a></td><td>${esc(e.text)}</td><td>${esc(e.resp||"—")}</td><td>${e.cost?uah(e.cost):""}</td></tr>`).join("")||"<tr><td class=mu colspan=5>Немає робіт за цей період</td></tr>"}</table></div></div>`;
 }
 function stockPage(){
-  const ce=canEdit(),l=[...S.stock].sort((a,b)=>a.name.localeCompare(b.name,"uk"));
+  const ce=canEdit();
+  const REPL=[/e0013/,/e0019.*\bbk\b/,/e0019.*\bc\b/,/e0019.*\by\b/,/e0019.*\bm\b/,/e0017.*\bbk\b/,/e0017.*\bm\b/,/e0017.*\by\b/,/e0017.*\bc\b/];
+  const ORIG=[/112/,/103.*\bbk\b/,/103.*\bc\b/,/103.*\by\b/,/103.*\bm\b/,/664.*\bbk\b/,/664.*\bm\b/,/664.*\bc\b/,/664.*\by\b/,/sublina.*\bc\b/,/sublina.*\bbk\b/,/sublina.*\bm\b/,/sublina.*\by\b/,/hp/];
+  const isR=s=>/\be00\d\d\b/i.test(s.name);
+  const rank=s=>{const n=s.name.toLowerCase(),i=(isR(s)?REPL:ORIG).findIndex(r=>r.test(n));return i<0?99:i};
+  const srt=a=>a.sort((x,y)=>rank(x)-rank(y)||x.name.localeCompare(y.name,"uk"));
+  const rep=srt(S.stock.filter(isR)),org=srt(S.stock.filter(s=>!isR(s))),l=[...rep,...org];
   const lowN=l.filter(s=>num(s.qty)<=num(s.min)).length;
+  const row=s=>`<tr><td>${esc(s.name)}${num(s.qty)<=num(s.min)?' <span class="tag e">мало</span>':""}</td><td><b>${esc(s.qty)}</b></td><td class=mu>${esc(s.min)}</td><td>${ce?`<div class=row style="flex-wrap:nowrap;justify-content:flex-end;gap:4px"><button data-a=stm data-id="${esc(s.id)}" aria-label="Зменшити на 1" title="Списати 1">−1</button><button data-a=stp data-id="${esc(s.id)}" aria-label="Збільшити на 1" title="Додати 1">+1</button><button data-a=edits data-id="${esc(s.id)}" aria-label="Редагувати" title="Редагувати">✎</button></div>`:""}</td></tr>`;
+  const head=t=>`<tr><td colspan=4 style="background:var(--bg);font-weight:700">${t}</td></tr>`;
   return ph("Склад","📦","Витратні матеріали та їхні залишки")+
   `<div class=row style="margin-bottom:8px">${ce?`<button class=p data-a=adds>＋ Матеріал</button>`:""}</div>
   <p class=mu>Позицій: ${l.length}${lowN?` · <span class="tag e">мало: ${lowN}</span>`:""}. Позначка «мало» з'являється, коли залишок не більший за мінімум.</p>
-  <div class=card><div class=ch><table><tr><th>Назва</th><th>К-сть</th><th>Мін.</th><th></th></tr>${l.map(s=>`<tr><td>${esc(s.name)}${num(s.qty)<=num(s.min)?' <span class="tag e">мало</span>':""}</td><td><b>${esc(s.qty)}</b></td><td class=mu>${esc(s.min)}</td><td>${ce?`<div class=row style="flex-wrap:nowrap;justify-content:flex-end;gap:4px"><button data-a=stm data-id="${esc(s.id)}" aria-label="Зменшити на 1" title="Списати 1">−1</button><button data-a=stp data-id="${esc(s.id)}" aria-label="Збільшити на 1" title="Додати 1">+1</button><button data-a=edits data-id="${esc(s.id)}" aria-label="Редагувати" title="Редагувати">✎</button></div>`:""}</td></tr>`).join("")||"<tr><td class=mu colspan=4>Матеріалів ще немає</td></tr>"}</table></div></div>`;
+  <div class=card><div class=ch><table><tr><th>Назва</th><th>К-сть</th><th>Мін.</th><th></th></tr>${l.length?(rep.length?head("Замінники")+rep.map(row).join(""):"")+(org.length?head("Оригінал")+org.map(row).join(""):""):"<tr><td class=mu colspan=4>Матеріалів ще немає</td></tr>"}</table></div></div>`;
 }
 function formStock(s={}){
   dlg(`<h3>${s.id?"Редагувати матеріал":"Новий матеріал"}</h3>${fld("Назва","k1",s.name,"text","maxlength=100")}<div class=row>${fld("Кількість","k2",s.qty??0,"number","min=0 step=any")}${fld("Мінімальний залишок","k3",s.min??1,"number","min=0 step=any")}</div><div class=row style="margin-top:12px"><button class=p data-a=saves data-id="${esc(s.id||"")}">Зберегти</button>${s.id&&isAdmin()?`<button class=d data-a=dels data-id="${esc(s.id)}">Видалити</button>`:""}<button data-a=x>Скасувати</button></div>`);
