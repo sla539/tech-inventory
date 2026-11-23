@@ -107,15 +107,25 @@ dialog{border:1px solid var(--bd);border-radius:12px;background:var(--card);colo
 dialog::backdrop{background:rgba(10,11,16,.55)}
 .auth{max-width:380px;margin:40px auto}
 
-/* етикетки (друк) */
+/* етикетка (перегляд і друк): синя шапка з номером, QR праворуч */
+.lbl{display:flex;flex-direction:column;width:90mm;box-sizing:border-box;border:.3mm solid #1d4b7a;background:#fff;color:#111;font-family:Inter,"DejaVu Sans",Arial,sans-serif;overflow:hidden;break-inside:avoid;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+.lbl .hd{background:#1d4b7a;color:#fff;font-weight:700;font-size:15pt;letter-spacing:.3pt;padding:2mm 4mm;overflow-wrap:anywhere}
+.lbl .bd{display:flex;justify-content:space-between;align-items:center;gap:3mm;padding:3mm 4mm;background:#f1f5fb}
+.lbl .tx{flex:1;min-width:0}
+.lbl .m{color:#1d4b7a;font-weight:700;font-size:11pt;line-height:1.2;margin-bottom:2mm;overflow-wrap:anywhere}
+.lbl .r{display:flex;gap:2mm;font-size:8.5pt;line-height:1.4}.lbl .r b{flex:none}.lbl .r span{overflow-wrap:anywhere}
+.lbl .ft{background:#2f5aa5;color:#fff;text-align:center;font-size:8pt;padding:1.6mm 3mm}
+.lbl .qrw{width:30mm;height:30mm;flex:none;padding:1.5mm;box-sizing:border-box;background:#fff}
+.lbl .qrw img{width:100%!important;height:100%!important;display:block}
+.lbl .qrw canvas{display:none!important}
 #sheet{display:none}
+@page{margin:8mm}
 @media print{
- body>*:not(#sheet){display:none!important}
- body{background:#fff;padding:0}
- #sheet{display:grid!important;grid-template-columns:repeat(3,1fr);gap:0;color:#000}
- .lb{display:flex;gap:8px;align-items:center;padding:8mm 6mm;border:1px dashed #999;break-inside:avoid}
- .lt{display:flex;flex-direction:column;font-size:11px;line-height:1.3;word-break:break-word}.lt b{font-size:14px}
- .noprint{display:none!important}
+ body{background:#fff!important;padding:0!important}
+ #side,.noprint,dialog{display:none!important}
+ main{margin:0!important;max-width:none!important;padding:0!important}
+ body.pl>*:not(#sheet){display:none!important}
+ body.pl #sheet{display:grid!important;grid-template-columns:repeat(2,90mm);gap:5mm;justify-content:center}
 }
 @media(prefers-reduced-motion:reduce){*{transition:none!important}}
 </style>
@@ -154,12 +164,15 @@ const firebaseConfig = {
 
 // UID головного адміністратора (Firebase → Authentication → Users → User UID).
 // Має збігатися зі значенням mainUid() у firestore.rules.
-const ADMIN_UID = "slavik2002@gmail.com";
+const ADMIN_UID = "imnv01reA1anc22Nkxe36a4erdA3";
 
 // Через скільки днів без звірки пристрій вважається «не звіреним»
 const INV_DAYS = 365;
 
 const SITE_NAME = "Облік техніки";
+
+// Підпис унизу етикетки, наприклад: "IT-підтримка: +380… | it@firma.ua". Порожньо = нижньої смуги не буде
+const LABEL_FOOTER = "";
 /* ============ ДАНІ З ТАБЛИЦІ ДЛЯ ІМПОРТУ ============ */
 const {SEED_DEVICES,SEED_STOCK}=(()=>{
 // Початкові дані з Google-таблиці (імпортуються однією кнопкою на сторінці «Статистика»)
@@ -666,17 +679,25 @@ async function uploadFile(file,did){
 const safeData=s=>/^data:(image\/(jpeg|png|webp|gif)|application\/pdf);base64,[A-Za-z0-9+\/=]+$/.test(s||"");
 
 /* ---------- етикетки з QR ---------- */
+const labelHtml=(d,qid)=>`<div class=lbl><div class=hd>${esc(d.tag||"—")}</div><div class=bd><div class=tx><div class=m>${esc(d.model)}</div><div class=r><b>Локація:</b><span>${esc(d.loc||"—")}</span></div><div class=r><b>Серійний №:</b><span>${esc(d.sn||"—")}</span></div></div><div class=qrw id="${qid}"></div></div>${LABEL_FOOTER?`<div class=ft>${esc(LABEL_FOOTER)}</div>`:""}</div>`;
+const qrInto=(d,elId)=>{const el=document.getElementById(elId);if(!el)return;el.innerHTML="";try{new QRCode(el,{text:location.origin+location.pathname+"#/d/"+d.id,width:240,height:240,correctLevel:QRCode.CorrectLevel.M})}catch(e){}};
+function previewLabel(id){
+  const d=dv(id);if(!d)return;
+  dlg(`<h3>Етикетка</h3><div style="display:flex;justify-content:center;margin:12px 0">${labelHtml(d,"pq")}</div><p class=mu style="text-align:center">QR відкриває картку цього пристрою.</p><div class=row style="margin-top:12px"><button class=p data-a=labprint data-id="${esc(id)}">🖨 Друкувати</button><button data-a=x>Закрити</button></div>`);
+  qrInto(d,"pq");
+}
 function printLabels(ids){
   const ds=ids.map(dv).filter(Boolean);
   if(!ds.length)return alert("Оберіть пристрої");
   let sh=$("#sheet");if(sh)sh.remove();
   sh=document.createElement("div");sh.id="sheet";
-  sh.innerHTML=ds.map((d,i)=>`<div class=lb><div id=qr${i}></div><div class=lt><b>${esc(d.tag||"—")}</b><span>${esc(d.model)}</span><span>${esc(d.sn)}</span></div></div>`).join("");
+  sh.innerHTML=ds.map((d,i)=>labelHtml(d,"sq"+i)).join("");
   document.body.appendChild(sh);
-  ds.forEach((d,i)=>{try{new QRCode($("#qr"+i),{text:location.origin+location.pathname+"#/d/"+d.id,width:96,height:96})}catch(e){}});
-  setTimeout(()=>window.print(),400);
+  ds.forEach((d,i)=>qrInto(d,"sq"+i));
+  document.body.classList.add("pl");
+  setTimeout(()=>window.print(),500);
 }
-window.addEventListener("afterprint",()=>{const s=$("#sheet");if(s)s.remove()});
+window.addEventListener("afterprint",()=>{document.body.classList.remove("pl");const s=$("#sheet");if(s)s.remove()});
 
 /* ---------- сторінки ---------- */
 function hbars(data){
@@ -698,11 +719,11 @@ function dash(){
 }
 function listFor(kind){
   const f=F,q=f.q.toLowerCase();
-  return S.devices.filter(d=>d.kind===kind&&(!f.status||d.status===f.status)&&(!f.loc||d.loc===f.loc)&&(!f.resp||d.resp===f.resp)&&(!f.model||d.model===f.model)&&(!q||[d.tag,d.model,d.sn,d.loc,d.resp,d.ip].join(" ").toLowerCase().includes(q)))
+  return S.devices.filter(d=>d.kind===kind&&(!f.status||d.status===f.status)&&(!f.loc||d.loc===f.loc)&&(!f.resp||d.resp===f.resp)&&(!f.model||d.model===f.model)&&(!q||[d.tag,d.model,d.sn,d.loc,d.resp,d.ip,d.assign].join(" ").toLowerCase().includes(q)))
     .sort((a,b)=>(a.model+a.sn).localeCompare(b.model+b.sn,"uk"));
 }
 const fsel=(l,key,opts)=>`<div><label>${l}</label><select data-f=${key}><option value="">Усі</option>${opts.map(o=>`<option ${F[key]===o?"selected":""}>${esc(o)}</option>`).join("")}</select></div>`;
-const card=d=>`<a class="card dv ${sc(d.status)}" href="#/d/${esc(d.id)}"><b>${esc(d.model)} ${esc(d.sn)}</b><div>${statusTag(d.status)}${d.tag?`<span class="tag g">${esc(d.tag)}</span>`:""}</div><div class=mu>${esc(d.loc||"без розташування")}${d.ip?" · "+esc(d.ip):""}</div><div class=mu>${d.resp?"Відповідальний: "+esc(d.resp):"Без відповідального"}</div></a>`;
+const card=d=>`<a class="card dv ${sc(d.status)}" href="#/d/${esc(d.id)}"><b>${esc(d.model)} ${esc(d.sn)}</b><div>${statusTag(d.status)}${d.tag?`<span class="tag g">${esc(d.tag)}</span>`:""}</div><div class=mu>${esc(d.loc||"без розташування")}${d.ip?" · "+esc(d.ip):""}</div><div class=mu>${d.resp?"Відповідальний: "+esc(d.resp):"Без відповідального"}</div>${d.assign?`<div class=mu>Закріплено за: ${esc(d.assign)}</div>`:""}</a>`;
 function listPage(kind){
   const K=KINDS[kind],l=listFor(kind),ds=S.devices.filter(x=>x.kind===kind);
   return ph(K.many,K.icon,"Усі пристрої цього типу")+
@@ -725,7 +746,7 @@ function devPage(id){
   let body="";
   if(TAB==="info"){
     const li=d.lastInv?fmt(d.lastInv):"ніколи",old=!d.lastInv||new Date(d.lastInv)<Date.now()-INV_DAYS*864e5;
-    body=`<div class=card><dl class=kv><dt>Тип</dt><dd>${K.one}</dd><dt>Інвентарний номер</dt><dd>${esc(d.tag||"—")}</dd><dt>Модель</dt><dd>${esc(d.model)}</dd><dt>Серійний номер</dt><dd>${esc(d.sn||"—")}</dd><dt>Статус</dt><dd>${statusTag(d.status)}</dd><dt>Розташування</dt><dd>${esc(d.loc||"—")}</dd><dt>Відповідальний</dt><dd>${esc(d.resp||"—")}</dd>${d.kind==="printer"?`<dt>IP</dt><dd>${esc(d.ip||"—")}</dd><dt>Картридж</dt><dd>${esc(d.cart||"—")}</dd><dt>Лічильник, стор.</dt><dd>${d.cnt?esc(d.cnt):"—"}</dd>`:""}<dt>Остання звірка</dt><dd>${li} ${old?'<span class="tag w">потрібна звірка</span>':""}</dd><dt>Нотатка</dt><dd>${esc(d.note||"—")}</dd></dl></div>`;
+    body=`<div class=card><dl class=kv><dt>Тип</dt><dd>${K.one}</dd><dt>Інвентарний номер</dt><dd>${esc(d.tag||"—")}</dd><dt>Модель</dt><dd>${esc(d.model)}</dd><dt>Серійний номер</dt><dd>${esc(d.sn||"—")}</dd><dt>Статус</dt><dd>${statusTag(d.status)}</dd><dt>Розташування</dt><dd>${esc(d.loc||"—")}</dd><dt>Відповідальний</dt><dd>${esc(d.resp||"—")}</dd>${d.kind==="laptop"?`<dt>Закріплено за</dt><dd>${esc(d.assign||"—")}</dd>`:""}${d.kind==="printer"?`<dt>IP</dt><dd>${esc(d.ip||"—")}</dd><dt>Картридж</dt><dd>${esc(d.cart||"—")}</dd><dt>Лічильник, стор.</dt><dd>${d.cnt?esc(d.cnt):"—"}</dd>`:""}<dt>Остання звірка</dt><dd>${li} ${old?'<span class="tag w">потрібна звірка</span>':""}</dd><dt>Нотатка</dt><dd>${esc(d.note||"—")}</dd></dl></div>`;
   }else if(TAB==="hist"){
     body=`<div class=card>${evs.length?evs.map(evRow).join(""):"<p class=mu>Подій ще немає</p>"}</div>`;
   }else if(TAB==="works"){
@@ -819,12 +840,13 @@ function render(){
 
 /* ---------- форми ---------- */
 function formDev(d={}){
-  const kind=d.kind,K=KINDS[kind],pr=kind==="printer",dl=uniq(S.devices.map(x=>x.loc)),dr=uniq(S.devices.map(x=>x.resp));
+  const kind=d.kind,K=KINDS[kind],pr=kind==="printer",dl=uniq(S.devices.map(x=>x.loc)),dr=uniq(S.devices.map(x=>x.resp)),da=uniq(S.devices.map(x=>x.assign));
   dlg(`<h3>${d.id?"Редагувати":"Новий"}: ${K.one.toLowerCase()}</h3>
-  <datalist id=dl_loc>${dl.map(x=>`<option value="${esc(x)}">`).join("")}</datalist><datalist id=dl_resp>${dr.map(x=>`<option value="${esc(x)}">`).join("")}</datalist>
+  <datalist id=dl_loc>${dl.map(x=>`<option value="${esc(x)}">`).join("")}</datalist><datalist id=dl_resp>${dr.map(x=>`<option value="${esc(x)}">`).join("")}</datalist><datalist id=dl_asg>${da.map(x=>`<option value="${esc(x)}">`).join("")}</datalist>
   <div class=row>${fld("Інвентарний номер (тег)","f1",d.tag,"text","maxlength=60")}${fld("Модель","f2",d.model,"text","maxlength=80")}</div>
   <div class=row>${fld("Серійний номер","f3",d.sn,"text","maxlength=80")}${sel("Статус","f4",STATUSES.map(s=>[s,s]),d.status||"на складі")}</div>
   <div class=row>${fld("Розташування","f5",d.loc,"text","list=dl_loc maxlength=80")}${fld("Відповідальний","f6",d.resp,"text","list=dl_resp maxlength=80")}</div>
+  ${!pr?`<div class=row>${fld("Закріплено за (номер)","f11",d.assign,"text","list=dl_asg maxlength=60")}</div>`:""}
   ${pr?`<div class=row>${fld("IP","f7",d.ip,"text","maxlength=60")}${fld("Картридж","f8",d.cart,"text","maxlength=100")}${fld("Лічильник, стор.","f9",d.cnt||"","number","min=0")}</div>`:""}
   ${fld("Нотатка","f10",d.note,"text","maxlength=300")}
   <div class=row style="margin-top:12px"><button class=p data-a=savedev data-id="${esc(d.id||"")}" data-k="${kind}">Зберегти</button><button data-a=x>Скасувати</button></div>`);
@@ -860,7 +882,7 @@ document.addEventListener("click",async e=>{
   if(a==="x"){d.close();return}
   if(a==="print"){window.print();return}
   /* усе нижче потребує прав */
-  const needEdit=["adds","edits","saves","stp","stm","add","savedev","co","ci","st","wk","inv","lab","edit","saveco","saveci","savest","savewk","delf","lball","lbnone","lbprint"];
+  const needEdit=["adds","edits","saves","stp","stm","add","savedev","co","ci","st","wk","inv","lab","edit","saveco","saveci","savest","savewk","delf","lball","lbnone","lbprint","labprint"];
   if(needEdit.includes(a)&&!canEdit())return alert("Ця дія доступна лише техніку або адміністратору.");
   if(["del","tgl","dels","imp"].includes(a)&&!isAdmin())return alert("Ця дія доступна лише адміністратору.");
   const dev=id?dv(id):null;
@@ -870,6 +892,7 @@ document.addEventListener("click",async e=>{
   else if(a==="savedev"){
     const old=id?dv(id):null,kind=old?old.kind:b.dataset.k,pr=kind==="printer";
     const o={kind,tag:val("f1").slice(0,60),model:val("f2").slice(0,80),sn:val("f3").slice(0,80),status:val("f4"),loc:val("f5").slice(0,80),resp:val("f6").slice(0,80),ip:pr?val("f7").slice(0,60):"",cart:pr?val("f8").slice(0,100):"",cnt:pr?Math.max(0,num(val("f9"))):0,lastInv:old?old.lastInv||"":"",note:val("f10").slice(0,300),ts:old?old.ts:Date.now()};
+    if(!pr)o.assign=val("f11").slice(0,60);
     if(!o.model)return alert("Вкажіть модель");
     if(o.tag&&S.devices.some(x=>x.id!==id&&(x.tag||"").toLowerCase()===o.tag.toLowerCase()))return alert("Пристрій з таким інвентарним номером уже є");
     const nid=id||newId();
@@ -919,7 +942,8 @@ document.addEventListener("click",async e=>{
     await patchDevice(id,{lastInv:new Date().toISOString()});
     await addEvent(id,"inventory","Звірено з наявністю",{resp:dev.resp});
   }
-  else if(a==="lab"&&dev)printLabels([id]);
+  else if(a==="lab"&&dev)previewLabel(id);
+  else if(a==="labprint"&&dev){d.close();printLabels([id])}
   else if(a==="del"&&dev){
     if(!confirm("Видалити «"+dname(dev)+"» разом з історією та файлами? Дію не скасувати."))return;
     for(const e of S.events.filter(x=>x.did===id))await deleteDoc(doc(fdb,"events",e.id));
