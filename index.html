@@ -640,9 +640,10 @@ const uniq=(arr)=>[...new Set(arr.filter(Boolean))].sort((a,b)=>a.localeCompare(
 const ph=(t,i,s,crumb)=>`<div class=ph><div class=bc><a href="#/">Головна</a> <span>›</span> ${crumb||`<b>${t}</b>`}</div><h2><span class=ni>${i}</span>${t}</h2>${s?`<p class=mu>${s}</p>`:""}</div>`;
 
 /* ---------- запис у базу ---------- */
+const byName=()=>ME&&ME.sup?"адміністратор":auth.currentUser.email;
 async function addEvent(did,type,text,x={}){
   const d=dv(did);
-  return addDoc(collection(fdb,"events"),{did,type,sub:String(x.sub||"").slice(0,60),date:x.date||today(),text:String(text).slice(0,300),cost:Math.min(999999,Math.max(0,num(x.cost))),by:auth.currentUser.email,resp:String(x.resp??(d?d.resp:"")).slice(0,80),ts:Date.now()});
+  return addDoc(collection(fdb,"events"),{did,type,sub:String(x.sub||"").slice(0,60),date:x.date||today(),text:String(text).slice(0,300),cost:Math.min(999999,Math.max(0,num(x.cost))),by:byName(),resp:String(x.resp??(d?d.resp:"")).slice(0,80),ts:Date.now()});
 }
 const patchDevice=(id,upd)=>setDoc(doc(fdb,"devices",id),upd,{merge:true});
 const fail=e=>alert("Помилка: "+(e&&(e.code||e.message)||e));
@@ -673,7 +674,7 @@ async function uploadFile(file,did){
   try{
     const data=await shrink(file);
     if(data.length>900000)return alert("Файл завеликий після стиснення");
-    await addDoc(collection(fdb,"files"),{did,name:file.name.slice(0,120),data,by:auth.currentUser.email,ts:Date.now()});
+    await addDoc(collection(fdb,"files"),{did,name:file.name.slice(0,120),data,by:byName(),ts:Date.now()});
   }catch(e){fail(e)}
 }
 const safeData=s=>/^data:(image\/(jpeg|png|webp|gif)|application\/pdf);base64,[A-Za-z0-9+\/=]+$/.test(s||"");
@@ -799,7 +800,7 @@ function usersPage(){
   const l=[...S.users].sort((a,b)=>(a.role==="pending"?0:1)-(b.role==="pending"?0:1)||a.email.localeCompare(b.email));
   const main=u=>u.id===ADMIN_UID,self=u=>u.id===ME.uid;
   return ph("Користувачі","👤","Схвалення доступу й ролі: перегляд, технік, адмін")+
-  `<div class=card><div class=ch><table>${l.map(u=>`<tr><td>${esc(u.name)}<div class=mu>${esc(u.email)}</div></td><td>${main(u)||self(u)?`<span class=tag>${ROLES[u.role]||u.role}</span>`:`<select data-ur="${esc(u.id)}">${Object.entries(ROLES).map(([k,v])=>`<option value=${k} ${u.role===k?"selected":""}>${v}</option>`).join("")}</select>`}</td><td>${u.active?'<span class="tag o">активний</span>':'<span class="tag e">вимкнений</span>'}</td><td>${main(u)||self(u)?"":`<button data-a=tgl data-id="${esc(u.id)}">${u.active?"⏸ Вимкнути":"▶ Увімкнути"}</button>`}</td></tr>`).join("")}</table></div></div><p class=mu>Нові користувачі реєструються самі й отримують статус «очікує». Призначте їм роль, щоб відкрити доступ.</p>`;
+  `<div class=card><div class=ch><table>${l.map(u=>`<tr><td>${esc(u.name)}<div class=mu>${esc(u.email)}</div></td><td>${main(u)||self(u)?`<span class=tag>${ROLES[u.role]||u.role}</span>`:`<select data-ur="${esc(u.id)}">${Object.entries(ROLES).map(([k,v])=>`<option value=${k} ${u.role===k?"selected":""}>${v}</option>`).join("")}</select>`}</td><td>${u.active?'<span class="tag o">активний</span>':'<span class="tag e">вимкнений</span>'}</td><td>${main(u)||self(u)?"":`<button data-a=tgl data-id="${esc(u.id)}">${u.active?"⏸ Вимкнути":"▶ Увімкнути"}</button>${ME.sup?`<button data-a=pwr data-id="${esc(u.id)}" title="Надіслати лист для зміни пароля">✉ Пароль</button>`:""}`}</td></tr>`).join("")}</table></div></div><p class=mu>Нові користувачі реєструються самі й отримують статус «очікує». Призначте їм роль, щоб відкрити доступ.</p>`;
 }
 function authHtml(){
   const box=h=>`<div class="card auth"><div style="text-align:center;font-weight:700;font-size:18px;margin-bottom:6px">${esc(SITE_NAME)}</div>${h}</div>`;
@@ -983,6 +984,12 @@ document.addEventListener("click",async e=>{
       alert("Готово. Імпортовано: принтерів — "+nd.length+", матеріалів — "+ns.length+".");
     }finally{b.disabled=false}
   }
+  else if(a==="pwr"){
+    const u=S.users.find(x=>x.id===id);if(!u||!ME.sup)return;
+    if(!confirm("Надіслати "+u.email+" лист для зміни пароля?"))return;
+    await sendPasswordResetEmail(auth,u.email);
+    alert("Лист надіслано на "+u.email+". Користувач сам задасть новий пароль за посиланням у листі (перевірте також «Спам»).");
+  }
   else if(a==="tgl"){const u=S.users.find(x=>x.id===id);if(u&&id!==ADMIN_UID&&id!==ME.uid)await setDoc(doc(fdb,"users",id),{active:!u.active},{merge:true})}
   }catch(x){fail(x)}
 });
@@ -1017,9 +1024,12 @@ $("#site").textContent=SITE_NAME;document.title=SITE_NAME;
 onAuthStateChanged(auth,async u=>{
   if(!u){ME=null;ST="login";render();return}
   try{
+    if(u.uid===ADMIN_UID){
+      // головний адмін: профілю в базі немає, тому його не бачать інші адміни; наявний профіль видаляється
+      try{await deleteDoc(doc(fdb,"users",u.uid))}catch(e){}
+      ME={uid:u.uid,email:u.email,name:"Головний адмін",role:"admin",active:true,sup:true};ST="ok";render();start();return;
+    }
     let sn=await getDoc(doc(fdb,"users",u.uid));
-    if(!sn.exists()&&u.uid===ADMIN_UID){await setDoc(doc(fdb,"users",u.uid),{email:u.email,name:"Адмін",role:"admin",active:true});sn=await getDoc(doc(fdb,"users",u.uid))}
-    else if(sn.exists()&&u.uid===ADMIN_UID&&sn.data().role!=="admin"){await setDoc(doc(fdb,"users",u.uid),{role:"admin",active:true},{merge:true});sn=await getDoc(doc(fdb,"users",u.uid))}
     if(!sn.exists()&&REG){await setDoc(doc(fdb,"users",u.uid),{email:u.email,name:REG.name,role:"pending",active:true});REG=null;sn=await getDoc(doc(fdb,"users",u.uid))}
     if(!sn.exists()||sn.data().active!==true){NOPROF=!sn.exists();ME=null;ST="noaccess";render();return}
     ME={uid:u.uid,...sn.data()};ST="ok";render();start();
