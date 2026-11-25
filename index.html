@@ -19,7 +19,9 @@ body{margin:0;background:var(--bg);color:var(--tx);font:15px/1.45 Inter,system-u
 a{color:inherit;text-decoration:none}
 button,select,input,textarea{font:inherit;color:var(--tx)}
 button{background:var(--card);border:1px solid var(--bd);border-radius:8px;padding:8px 13px;font-weight:500;cursor:pointer;min-height:38px}
-button:hover{border-color:var(--mu)}
+button{transition:transform .12s ease,border-color .12s ease,opacity .12s ease}
+button:hover:not(:disabled){border-color:var(--mu);transform:translateY(-1px) scale(1.04)}
+button:active:not(:disabled){transform:scale(.97)}
 button.p{background:var(--btn);color:var(--btx);border-color:var(--btn)}
 button.p:hover{opacity:.88}
 button.d{color:var(--er)}
@@ -77,6 +79,9 @@ body.noauth #nav,body.noauth .side-foot{display:none}
 .dv:hover{border-color:var(--bd);border-left-color:currentColor;box-shadow:0 2px 10px rgba(0,0,0,.06)}
 .card.dv:hover{transform:translateY(-3px) scale(1.03);z-index:2;background:color-mix(in srgb,var(--ac) 5%,var(--card));border-top-color:var(--ac);border-right-color:var(--ac);border-bottom-color:var(--ac);box-shadow:0 8px 22px rgba(0,0,0,.18)}
 .card.dv:active{transform:scale(.99)}
+.grid2>.card{transition:transform .15s ease,box-shadow .15s ease,border-color .15s ease,background-color .15s ease}
+.grid2>.card:hover{transform:translateY(-3px) scale(1.02);border-color:var(--ac);background:color-mix(in srgb,var(--ac) 4%,var(--card));box-shadow:0 8px 22px rgba(0,0,0,.16);position:relative;z-index:2}
+.kg{transition:box-shadow .15s ease,border-color .15s ease}.kg:hover{border-color:var(--ac);box-shadow:0 4px 14px rgba(0,0,0,.1)}
 .dv.s0{border-left-color:var(--ok)}.dv.s1{border-left-color:var(--ac)}.dv.s2{border-left-color:#E5A100}.dv.s3{border-left-color:var(--mu)}.dv.s4{border-left-color:var(--er)}
 .dv b{font-size:15px}
 .tag{display:inline-block;font-size:12px;font-weight:600;padding:2px 8px;border-radius:6px;background:var(--ac2);color:var(--ac);margin:2px 4px 0 0;white-space:nowrap}
@@ -100,7 +105,9 @@ body.noauth #nav,body.noauth .side-foot{display:none}
 
 /* таблиці й історія */
 .ch{overflow-x:auto}
-tr.lr{transition:background-color .15s ease}tr.lr:hover td{background:color-mix(in srgb,var(--ac) 7%,var(--card))}tr.lr.pick td{background:var(--ac2)}
+.ch tr td{transition:background-color .15s ease}
+.ch tr:hover td{background:color-mix(in srgb,var(--ac) 7%,var(--card))}
+tr.lr.pick td,.ch tr.lr.pick:hover td{background:var(--ac2)}
 table{width:100%;border-collapse:collapse}td,th{padding:8px 6px;border-bottom:1px solid var(--bd);text-align:left;font-size:13px;vertical-align:top}th{color:var(--mu);font-weight:600}
 .kv{display:grid;grid-template-columns:minmax(120px,200px) 1fr;gap:6px 14px;font-size:14px}.kv dt{color:var(--mu)}.kv dd{margin:0}
 .ev{display:flex;gap:12px;padding:10px 0;border-bottom:1px solid var(--bd)}.ev:last-child{border-bottom:0}.evd{flex:0 0 84px;color:var(--mu);font-size:13px}
@@ -133,7 +140,7 @@ dialog::backdrop{background:rgba(10,11,16,.55)}
  body.pl>*:not(#sheet){display:none!important}
  body.pl #sheet{display:grid!important;grid-template-columns:repeat(2,90mm);gap:5mm;justify-content:center}
 }
-@media(prefers-reduced-motion:reduce){*{transition:none!important}#nav button:hover,.card.dv:hover{transform:none!important}#nav button:hover .ni{transform:none!important}}
+@media(prefers-reduced-motion:reduce){*{transition:none!important}#nav button:hover,.card.dv:hover,.grid2>.card:hover,button:hover{transform:none!important}#nav button:hover .ni{transform:none!important}}
 </style>
 </head>
 <body class="noauth">
