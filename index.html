@@ -1015,7 +1015,7 @@ function start(){
     onSnapshot(collection(fdb,"stock"),sn=>{S.stock=sn.docs.map(d=>({...d.data(),id:d.id}));LOADED.stk=true;render()},()=>{});
     onSnapshot(collection(fdb,"events"),sn=>{S.events=sn.docs.map(d=>({...d.data(),id:d.id}));render()},()=>{});
   }
-  if(isAdmin())onSnapshot(collection(fdb,"users"),sn=>{S.users=sn.docs.map(d=>({...d.data(),id:d.id}));render()},()=>{});
+  if(isAdmin())onSnapshot(collection(fdb,"users"),sn=>{S.users=sn.docs.map(d=>({...d.data(),id:d.id})).filter(u=>u.id!==ADMIN_UID);render()},()=>{});
 }
 
 /* ---------- вхід ---------- */
@@ -1026,7 +1026,7 @@ onAuthStateChanged(auth,async u=>{
   try{
     if(u.uid===ADMIN_UID){
       // головний адмін: профілю в базі немає, тому його не бачать інші адміни; наявний профіль видаляється
-      try{await deleteDoc(doc(fdb,"users",u.uid))}catch(e){}
+      try{await deleteDoc(doc(fdb,"users",u.uid))}catch(e){console.warn("profile delete:",e&&e.code);if(e&&e.code==="permission-denied")alert("Правила Firestore не дозволили видалити ваш старий профіль. Перевірте, що у Firebase опубліковано новий firestore.rules (з рядком isSuper), або видаліть документ users/"+u.uid+" вручну.")}
       ME={uid:u.uid,email:u.email,name:"Головний адмін",role:"admin",active:true,sup:true};ST="ok";render();start();return;
     }
     let sn=await getDoc(doc(fdb,"users",u.uid));
