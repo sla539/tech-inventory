@@ -6,7 +6,7 @@
 <title>Облік техніки</title>
 <meta name="theme-color" content="#111827">
 <script>if(window.top!==window.self)document.documentElement.style.display="none"</script>
-<script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js" integrity="sha384-3zSEDfvllQohrq0PHL1fOXJuC/jSOO34H46t6UQfobFOmxE5BpjjaIJY5F2/bMnU" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js" crossorigin="anonymous"></script>
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
@@ -132,6 +132,16 @@ dialog::backdrop{background:rgba(10,11,16,.55)}
 .lbl .qrw img{width:100%!important;height:100%!important;display:block}
 .lbl .qrw canvas{display:none!important}
 #sheet{display:none}
+/* фільтри-«чіпи», сканер, інвентаризація */
+.chips{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px}
+.chips button{border-radius:999px;padding:6px 14px;min-height:34px}
+.chips button span{color:var(--mu);font-weight:600;margin-left:4px}
+.chips button.on{background:var(--ac2);border-color:var(--ac);color:var(--ac)}
+.scbox{position:relative;border-radius:12px;overflow:hidden;background:#000;aspect-ratio:1/1;max-height:60vh;margin:8px auto 0}
+.scbox video{width:100%;height:100%;object-fit:cover;display:block}
+.scfr{position:absolute;inset:18%;border:3px solid rgba(255,255,255,.85);border-radius:16px;box-shadow:0 0 0 999px rgba(0,0,0,.28);pointer-events:none}
+.scs{margin-top:10px;font-weight:600;min-height:22px}.scs.ok{color:var(--ok)}.scs.bad{color:var(--er)}
+details.card summary{cursor:pointer}
 @page{margin:8mm}
 @media print{
  body{background:#fff!important;padding:0!important}
@@ -158,9 +168,10 @@ dialog::backdrop{background:rgba(10,11,16,.55)}
 </aside>
 <main id="m"></main>
 <dialog id="dg"></dialog>
+<dialog id="scd"></dialog>
 <script type="module">
-import {initializeApp} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
-import {getFirestore,collection,doc,setDoc,addDoc,deleteDoc,onSnapshot,getDoc,query,where} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+import {initializeApp,deleteApp} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+import {getFirestore,collection,doc,setDoc,addDoc,deleteDoc,onSnapshot,getDoc,query,where,orderBy,limit} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import {getAuth,signInWithEmailAndPassword,createUserWithEmailAndPassword,sendPasswordResetEmail,onAuthStateChanged,signOut} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 
 /* ============ НАЛАШТУВАННЯ: заповніть значення (див. інструкцію) ============ */
@@ -615,16 +626,17 @@ const fapp=initializeApp(firebaseConfig),fdb=getFirestore(fapp),auth=getAuth(fap
 /* ---------- довідники ---------- */
 const STATUSES=["в роботі","на складі","в ремонті","списано","втрачено"];
 const KINDS={printer:{one:"Принтер",many:"Принтери",icon:"🖨️",route:"printers"},laptop:{one:"Ноутбук",many:"Ноутбуки",icon:"💻",route:"laptops"}};
-const WORK_TYPES=["Заміна картриджа","Заправка","Ремонт","Чистка","Заміна комплектуючих","Інше"];
+const WORK_TYPES=["Заміна картриджа","Заправка","Ремонт","Чистка","Заміна комплектуючих","Профілактика (ТО)","Інше"];
+const RQ_ST=["нова","в роботі","виконано","відхилено"];
 const ROLES={pending:"очікує",viewer:"перегляд",tech:"технік",admin:"адмін"};
 const EV={checkout:"Видано",checkin:"Прийнято",status:"Статус",inventory:"Звірено",work:"Робота",edit:"Зміна"};
 
 /* ---------- стан ---------- */
-const S={devices:[],events:[],users:[],files:[],stock:[]};
+const S={devices:[],events:[],users:[],files:[],stock:[],requests:[],audit:[],counters:[],maint:[],inv:null};
 const LOADED={dev:false,stk:false};
 let ME=null,ST="load",ERR="",REG=null,NOPROF=false,started=false,TAB="info",lastKey="";
 const freshF=()=>({q:"",status:"",loc:"",resp:"",model:""});
-let F=freshF(),LB=new Set(),R={from:"",to:"",kind:""};
+let F=freshF(),LB=new Set(),R={from:"",to:"",kind:""},RQF="open";
 
 /* ---------- утиліти ---------- */
 const $=s=>document.querySelector(s);
@@ -638,6 +650,7 @@ const fmt=d=>d?String(d).slice(0,10).split("-").reverse().join("."):"—";
 const num=v=>Number(v)||0;
 const uah=v=>Math.round(v).toLocaleString("uk-UA")+" ₴";
 const val=id=>{const e=$("#"+id);return e?e.value.trim():""};
+const isR=s=>/\be00\d\d\b/i.test(s.name);
 const dv=id=>S.devices.find(x=>x.id===id);
 const dname=d=>d?(d.model+(d.sn?" "+d.sn:"")):"(видалено)";
 const sc=s=>"s"+Math.max(0,STATUSES.indexOf(s));
@@ -658,6 +671,7 @@ async function addEvent(did,type,text,x={}){
   const d=dv(did);
   return addDoc(collection(fdb,"events"),{did,type,sub:String(x.sub||"").slice(0,60),date:x.date||today(),text:String(text).slice(0,300),cost:Math.min(999999,Math.max(0,num(x.cost))),by:byName(),resp:String(x.resp??(d?d.resp:"")).slice(0,80),ts:Date.now()});
 }
+const log=(act,text)=>{try{addDoc(collection(fdb,"audit"),{act:String(act).slice(0,40),text:String(text).slice(0,300),by:byName(),ts:Date.now()}).catch(()=>{})}catch(e){}};
 const patchDevice=(id,upd)=>setDoc(doc(fdb,"devices",id),upd,{merge:true});
 const fail=e=>alert("Помилка: "+(e&&(e.code||e.message)||e));
 
@@ -714,22 +728,26 @@ function printLabels(ids){
 window.addEventListener("afterprint",()=>{document.body.classList.remove("pl");const s=$("#sheet");if(s)s.remove()});
 
 /* ---------- сторінки ---------- */
-function hbars(data){
+function hbars(data,f=x=>x){
   const mx=Math.max(1,...data.map(d=>d[1]));
-  return data.length?data.map(d=>`<div style="margin:8px 0"><div class=row style="justify-content:space-between;flex-wrap:nowrap"><span>${esc(d[0])}</span><b style="flex:0">${d[1]}</b></div><div class=bar><i style="width:${d[1]/mx*100}%"></i></div></div>`).join(""):"<p class=mu>Немає даних</p>";
+  return data.length?data.map(d=>`<div style="margin:8px 0"><div class=row style="justify-content:space-between;flex-wrap:nowrap"><span>${esc(d[0])}</span><b style="flex:0;white-space:nowrap">${f(d[1])}</b></div><div class=bar><i style="width:${d[1]/mx*100}%"></i></div></div>`).join(""):"<p class=mu>Немає даних</p>";
 }
 function dash(){
   const d=S.devices,n=k=>d.filter(x=>x.status===k).length,lim=Date.now()-INV_DAYS*864e5;
   const unv=d.filter(x=>!x.lastInv||new Date(x.lastInv)<lim).length;
   const grp=key=>{const m={};d.forEach(x=>{const k=x[key]||"—";m[k]=(m[k]||0)+1});return Object.entries(m).sort((a,b)=>b[1]-a[1]).slice(0,8)};
   const pr=d.filter(x=>x.kind==="printer").length,lp=d.length-pr;
-  const low=S.stock.filter(s=>num(s.qty)<=num(s.min)).length;
+  const low=S.stock.filter(s=>isR(s)&&num(s.qty)<=num(s.min)).length;
   const needDev=LOADED.dev&&!SEED_DEVICES.some(x=>d.some(y=>y.id===x.id)),needStk=LOADED.stk&&!SEED_STOCK.some(x=>S.stock.some(y=>y.id===x.id));
   const impCard=isAdmin()&&(needDev||needStk)?`<div class=card style="border-color:var(--ac)"><b>Початкові дані з таблиці</b><p class=mu>Можна імпортувати: ${needDev?"принтерів — "+SEED_DEVICES.length:""}${needDev&&needStk?", ":""}${needStk?"матеріалів — "+SEED_STOCK.length:""}. Повторне натискання дублів не створює.</p><button class=p data-a=imp>⬇ Імпортувати</button></div>`:"";
-  return ph("Статистика","📊","Стан техніки та розташування")+impCard+
-  `<div class=kg><div class=kt><span class=mu>Усього</span><b>${d.length}</b></div><div class="kt k3"><span class=mu>Мало на складі</span><b>${low}</b></div><div class="kt k2"><span class=mu>В роботі</span><b>${n("в роботі")}</b></div><div class=kt><span class=mu>На складі</span><b>${n("на складі")}</b></div><div class="kt k3"><span class=mu>В ремонті</span><b>${n("в ремонті")}</b></div><div class="kt k4"><span class=mu>Не звірено (${INV_DAYS} дн.)</span><b>${unv}</b></div></div>
+  const fcs=forecastList(),rq=S.requests.filter(r=>r.status==="нова"||r.status==="в роботі").length,toOver=isAdmin()?maintDue().filter(x=>x.over).length:0;
+  const noFc=d.filter(x=>x.kind==="printer"&&x.status==="в роботі"&&!forecast(x)).length;
+  const scanBtns=`<div class=row style="margin:0 0 12px">${canEdit()?`<button class=p data-a=scan data-m=out>⚡ Швидка видача</button>`:""}<button data-a=scan data-m=open>📷 Сканувати QR</button><button data-a=rqnew>⚠ Повідомити про несправність</button></div>`;
+  const fcCard=`<div class=card><b>Скоро закінчиться картридж</b>${fcs.length?`<div class=ch><table><tr><th>Принтер</th><th>Де</th><th>Залишилось</th></tr>${fcs.map(x=>`<tr><td><a href="#/d/${esc(x.d.id)}">${esc(dname(x.d))}</a><div class=mu>${esc(x.d.cart||"")}</div></td><td>${esc(x.d.loc||"—")}</td><td>${fcTag(x.f)}</td></tr>`).join("")}</table></div>`:`<p class=mu>${noFc?"Найближчі 30 днів нічого не закінчується (або прогноз ще не налаштовано).":"Найближчі 30 днів нічого не закінчується."}</p>`}${noFc?`<p class=mu style="margin-top:8px">Прогноз не налаштовано для принтерів: ${noFc}. У картці принтера (✎) вкажіть ресурс картриджа та дату останньої заміни.</p>`:""}</div>`;
+  return ph("Статистика","📊","Стан техніки та розташування")+scanBtns+impCard+
+  `<div class=kg><div class=kt><span class=mu>Усього</span><b>${d.length}</b></div><div class="kt k3"><span class=mu>Мало на складі</span><b>${low}</b></div><div class="kt k2"><span class=mu>В роботі</span><b>${n("в роботі")}</b></div><div class=kt><span class=mu>На складі</span><b>${n("на складі")}</b></div><div class="kt k3"><span class=mu>В ремонті</span><b>${n("в ремонті")}</b></div><div class="kt k4"><span class=mu>Не звірено (${INV_DAYS} дн.)</span><b>${unv}</b></div><div class="kt k3"><span class=mu>Закінчується картридж</span><b>${fcs.length}</b></div><div class="kt k4"><span class=mu>Відкриті заявки</span><b>${rq}</b></div>${isAdmin()?`<div class="kt k4"><span class=mu>ТО прострочено</span><b>${toOver}</b></div>`:""}</div>
   <p class=mu>Принтерів: ${pr}, ноутбуків: ${lp}.</p>
-  <div class=grid2><div class=card><b>За розташуванням</b>${hbars(grp("loc"))}</div><div class=card><b>За моделями</b>${hbars(grp("model"))}</div></div>`;
+  <div class=grid2><div class=card><b>За розташуванням</b>${hbars(grp("loc"))}</div><div class=card><b>За моделями</b>${hbars(grp("model"))}</div></div>${fcCard}`;
 }
 function listFor(kind){
   const f=F,q=f.q.toLowerCase();
@@ -755,22 +773,26 @@ function devPage(id){
   const K=KINDS[d.kind],evs=S.events.filter(e=>e.did===id).sort((a,b)=>b.ts-a.ts),works=evs.filter(e=>e.type==="work");
   const crumb=`<a href="#/${K.route}">${K.many}</a> <span>›</span> <b>${esc(dname(d))}</b>`;
   const ce=canEdit(),assigned=d.status==="в роботі",avail=d.status==="на складі";
-  const acts=ce?`<div class=row style="margin:10px 0">${avail?`<button class=p data-a=co data-id="${esc(id)}">Видати</button>`:""}${assigned?`<button class=p data-a=ci data-id="${esc(id)}">Прийняти</button>`:""}<button data-a=st data-id="${esc(id)}">Змінити статус</button><button data-a=wk data-id="${esc(id)}">＋ Робота</button><button data-a=inv data-id="${esc(id)}">✔ Звірити</button><button data-a=lab data-id="${esc(id)}">QR-етикетка</button><button data-a=edit data-id="${esc(id)}">✎ Редагувати</button>${isAdmin()?`<button class=d data-a=del data-id="${esc(id)}">Видалити</button>`:""}</div>`:"";
+  const acts=ce?`<div class=row style="margin:10px 0">${avail?`<button class=p data-a=co data-id="${esc(id)}">Видати</button>`:""}${assigned?`<button class=p data-a=ci data-id="${esc(id)}">Прийняти</button>`:""}<button data-a=st data-id="${esc(id)}">Змінити статус</button><button data-a=wk data-id="${esc(id)}">＋ Робота</button><button data-a=inv data-id="${esc(id)}">✔ Звірити</button><button data-a=lab data-id="${esc(id)}">QR-етикетка</button><button data-a=rqnew data-id="${esc(id)}">⚠ Заявка</button><button data-a=edit data-id="${esc(id)}">✎ Редагувати</button>${isAdmin()?`<button class=d data-a=del data-id="${esc(id)}">Видалити</button>`:""}</div>`:"";
+  const rqb=`<div class=row style="margin:10px 0"><button data-a=rqnew data-id="${esc(id)}">⚠ Повідомити про несправність</button></div>`;
   const tabs=[["info","Інформація"],["hist","Історія ("+evs.length+")"],["works","Роботи ("+works.length+")"],["files","Файли ("+S.files.length+")"]];
+  if(isAdmin()&&d.kind==="printer")tabs.push(["cnt","Лічильник"]);
   let body="";
   if(TAB==="info"){
     const li=d.lastInv?fmt(d.lastInv):"ніколи",old=!d.lastInv||new Date(d.lastInv)<Date.now()-INV_DAYS*864e5;
-    body=`<div class=card><dl class=kv><dt>Тип</dt><dd>${K.one}</dd><dt>Інвентарний номер</dt><dd>${esc(d.tag||"—")}</dd><dt>Модель</dt><dd>${esc(d.model)}</dd><dt>Серійний номер</dt><dd>${esc(d.sn||"—")}</dd><dt>Статус</dt><dd>${statusTag(d.status)}</dd><dt>Розташування</dt><dd>${esc(d.loc||"—")}</dd><dt>Відповідальний</dt><dd>${esc(d.resp||"—")}</dd>${d.kind==="laptop"?`<dt>Закріплено за</dt><dd>${esc(d.assign||"—")}</dd>`:""}${d.kind==="printer"?`<dt>IP</dt><dd>${esc(d.ip||"—")}</dd><dt>Картридж</dt><dd>${esc(d.cart||"—")}</dd><dt>Лічильник, стор.</dt><dd>${d.cnt?esc(d.cnt):"—"}</dd>`:""}<dt>Остання звірка</dt><dd>${li} ${old?'<span class="tag w">потрібна звірка</span>':""}</dd><dt>Нотатка</dt><dd>${esc(d.note||"—")}</dd></dl></div>`;
+    body=`<div class=card><dl class=kv><dt>Тип</dt><dd>${K.one}</dd><dt>Інвентарний номер</dt><dd>${esc(d.tag||"—")}</dd><dt>Модель</dt><dd>${esc(d.model)}</dd><dt>Серійний номер</dt><dd>${esc(d.sn||"—")}</dd><dt>Статус</dt><dd>${statusTag(d.status)}</dd><dt>Розташування</dt><dd>${esc(d.loc||"—")}</dd><dt>Відповідальний</dt><dd>${esc(d.resp||"—")}</dd>${d.kind==="laptop"?`<dt>Закріплено за</dt><dd>${esc(d.assign||"—")}</dd>`:""}${d.kind==="printer"?`<dt>IP</dt><dd>${esc(d.ip||"—")}</dd><dt>Картридж</dt><dd>${esc(d.cart||"—")}</dd><dt>Лічильник, стор.</dt><dd>${d.cnt?esc(d.cnt):"—"}</dd><dt>Навантаження</dt><dd>${loadOf(d)?loadOf(d)+" стор./міс.":"—"}</dd><dt>Ресурс картриджа</dt><dd>${d.res?esc(d.res)+" стор.":"—"}</dd><dt>Остання заміна</dt><dd>${d.cdate?fmt(d.cdate):"—"}</dd><dt>Прогноз</dt><dd>${forecast(d)?fcTag(forecast(d)):'<span class=mu>не налаштовано</span>'}</dd>`:""}<dt>Остання звірка</dt><dd>${li} ${old?'<span class="tag w">потрібна звірка</span>':""}</dd><dt>Нотатка</dt><dd>${esc(d.note||"—")}</dd></dl></div>${compatCard(d)}${devReqs(id)}`;
   }else if(TAB==="hist"){
     body=`<div class=card>${evs.length?evs.map(evRow).join(""):"<p class=mu>Подій ще немає</p>"}</div>`;
   }else if(TAB==="works"){
     const sum=works.reduce((a,e)=>a+num(e.cost),0);
     body=`<div class=card><p class=mu>Робіт: ${works.length} · витрати: <b>${uah(sum)}</b></p>${works.length?works.map(evRow).join(""):"<p class=mu>Робіт ще немає</p>"}</div>`;
+  }else if(TAB==="cnt"&&isAdmin()){
+    body=counterTab(d);
   }else{
     const fs=[...S.files].sort((a,b)=>b.ts-a.ts);
     body=`<div class=card>${ce?`<label style="display:inline-block;border:1px solid var(--bd);padding:9px 13px;border-radius:8px;cursor:pointer;color:var(--tx);font-size:14px;margin:0 0 12px">📎 Додати фото або PDF<input id=fu type=file accept="image/*,application/pdf" hidden></label>`:""}<div class=files>${fs.length?fs.map(f=>safeData(f.data)?`<div class=fi>${f.data.startsWith("data:image/")?`<a href="${f.data}" download="${esc(f.name)}"><img src="${f.data}" alt="${esc(f.name)}"></a>`:`<a href="${f.data}" download="${esc(f.name)}" style="font-size:28px">📄</a>`}<div>${esc(f.name)}</div><div class=mu>${esc(f.by)}</div>${ce?`<button class=d data-a=delf data-id="${esc(f.id)}" style="min-height:30px;padding:4px 8px;margin-top:6px">Видалити</button>`:""}</div>`:"").join(""):"<p class=mu>Файлів немає</p>"}</div><p class=mu style="margin-top:10px">Файли зберігаються в базі: до ~0,9 МБ кожен. Фото стискаються автоматично.</p></div>`;
   }
-  return ph(esc(dname(d)),K.icon,esc(d.tag?"№ "+d.tag:""),crumb)+acts+`<div class=tabs>${tabs.map(t=>`<button data-tab=${t[0]} class="${TAB===t[0]?"on":""}">${t[1]}</button>`).join("")}</div>`+body;
+  return ph(esc(dname(d)),K.icon,esc(d.tag?"№ "+d.tag:""),crumb)+acts+(ce?"":rqb)+`<div class=tabs>${tabs.map(t=>`<button data-tab=${t[0]} class="${TAB===t[0]?"on":""}">${t[1]}</button>`).join("")}</div>`+body;
 }
 function reports(){
   if(!R.from)R.from=daysAgo(90);if(!R.to)R.to=today();
@@ -782,22 +804,21 @@ function reports(){
   `<div class="card row noprint"><div>${fld("Від","r1",R.from,"date","data-r=from")}</div><div>${fld("До","r2",R.to,"date","data-r=to")}</div><div>${sel("Тип","r3",[["","Усі"],["printer","Принтери"],["laptop","Ноутбуки"]],R.kind,"data-r=kind")}</div><button data-a=print>🖨 Друк</button></div>
   <div class=kg><div class=kt><span class=mu>Робіт</span><b>${ws.length}</b></div><div class="kt k3"><span class=mu>Витрати</span><b>${uah(sum)}</b></div><div class="kt k2"><span class=mu>Середня вартість</span><b>${ws.length?uah(sum/ws.length):"—"}</b></div></div>
   <div class=grid2>${gt("За пристроями",grp(e=>dname(dv(e.did))+(dv(e.did)&&dv(e.did).tag?" ("+dv(e.did).tag+")":"")))}${gt("За відповідальними",grp(e=>e.resp))}</div>
-  <div class=card><b>Усі роботи</b><div class=ch><table><tr><th>Дата</th><th>Пристрій</th><th>Робота</th><th>Відповідальний</th><th>Сума</th></tr>${ws.map(e=>`<tr><td>${fmt(e.date)}</td><td><a href="#/d/${esc(e.did)}">${esc(dname(dv(e.did)))}</a></td><td>${esc(e.text)}</td><td>${esc(e.resp||"—")}</td><td>${e.cost?uah(e.cost):""}</td></tr>`).join("")||"<tr><td class=mu colspan=5>Немає робіт за цей період</td></tr>"}</table></div></div>`;
+  ${isAdmin()?costAnalytics(ws,sum):""}<div class=card><b>Усі роботи</b><div class=ch><table><tr><th>Дата</th><th>Пристрій</th><th>Робота</th><th>Відповідальний</th><th>Сума</th></tr>${ws.map(e=>`<tr><td>${fmt(e.date)}</td><td><a href="#/d/${esc(e.did)}">${esc(dname(dv(e.did)))}</a></td><td>${esc(e.text)}</td><td>${esc(e.resp||"—")}</td><td>${e.cost?uah(e.cost):""}</td></tr>`).join("")||"<tr><td class=mu colspan=5>Немає робіт за цей період</td></tr>"}</table></div></div>`;
 }
 function stockPage(){
   const ce=canEdit();
   const REPL=[/e0013/,/e0019.*\bbk\b/,/e0019.*\bc\b/,/e0019.*\by\b/,/e0019.*\bm\b/,/e0017.*\bbk\b/,/e0017.*\bm\b/,/e0017.*\by\b/,/e0017.*\bc\b/];
   const ORIG=[/112/,/103.*\bbk\b/,/103.*\bc\b/,/103.*\by\b/,/103.*\bm\b/,/664.*\bbk\b/,/664.*\bm\b/,/664.*\bc\b/,/664.*\by\b/,/sublina.*\bc\b/,/sublina.*\bbk\b/,/sublina.*\bm\b/,/sublina.*\by\b/,/hp/];
-  const isR=s=>/\be00\d\d\b/i.test(s.name);
-  const rank=s=>{const n=s.name.toLowerCase(),i=(isR(s)?REPL:ORIG).findIndex(r=>r.test(n));return i<0?99:i};
+    const rank=s=>{const n=s.name.toLowerCase(),i=(isR(s)?REPL:ORIG).findIndex(r=>r.test(n));return i<0?99:i};
   const srt=a=>a.sort((x,y)=>rank(x)-rank(y)||x.name.localeCompare(y.name,"uk"));
   const rep=srt(S.stock.filter(isR)),org=srt(S.stock.filter(s=>!isR(s))),l=[...rep,...org];
-  const lowN=l.filter(s=>num(s.qty)<=num(s.min)).length;
-  const row=s=>`<tr><td>${esc(s.name)}${num(s.qty)<=num(s.min)?' <span class="tag e">мало</span>':""}</td><td><b>${esc(s.qty)}</b></td><td class=mu>${esc(s.min)}</td><td>${ce?`<div class=row style="flex-wrap:nowrap;justify-content:flex-end;gap:4px"><button data-a=stm data-id="${esc(s.id)}" aria-label="Зменшити на 1" title="Списати 1">−1</button><button data-a=stp data-id="${esc(s.id)}" aria-label="Збільшити на 1" title="Додати 1">+1</button><button data-a=edits data-id="${esc(s.id)}" aria-label="Редагувати" title="Редагувати">✎</button></div>`:""}</td></tr>`;
+  const lowN=rep.filter(s=>num(s.qty)<=num(s.min)).length;
+  const row=s=>`<tr><td>${esc(s.name)}${isR(s)&&num(s.qty)<=num(s.min)?' <span class="tag e">мало</span>':""}</td><td><b>${esc(s.qty)}</b></td><td class=mu>${esc(s.min)}</td><td>${ce?`<div class=row style="flex-wrap:nowrap;justify-content:flex-end;gap:4px"><button data-a=stm data-id="${esc(s.id)}" aria-label="Зменшити на 1" title="Списати 1">−1</button><button data-a=stp data-id="${esc(s.id)}" aria-label="Збільшити на 1" title="Додати 1">+1</button><button data-a=edits data-id="${esc(s.id)}" aria-label="Редагувати" title="Редагувати">✎</button></div>`:""}</td></tr>`;
   const head=t=>`<tr><td colspan=4 style="background:var(--bg);font-weight:700">${t}</td></tr>`;
   return ph("Склад","📦","Витратні матеріали та їхні залишки")+
   `<div class=row style="margin-bottom:8px">${ce?`<button class=p data-a=adds>＋ Матеріал</button>`:""}</div>
-  <p class=mu>Позицій: ${l.length}${lowN?` · <span class="tag e">мало: ${lowN}</span>`:""}. Позначка «мало» з'являється, коли залишок не більший за мінімум.</p>
+  <p class=mu>Позицій: ${l.length}${lowN?` · <span class="tag e">мало: ${lowN}</span>`:""}. Позначка «мало» ставиться лише замінникам, коли залишок не більший за мінімум. Оригінальні фарби не позначаються.</p>
   <div class=card><div class=ch><table><tr><th>Назва</th><th>К-сть</th><th>Мін.</th><th></th></tr>${l.length?(rep.length?head("Замінники")+rep.map(row).join(""):"")+(org.length?head("Оригінал")+org.map(row).join(""):""):"<tr><td class=mu colspan=4>Матеріалів ще немає</td></tr>"}</table></div></div>`;
 }
 function formStock(s={}){
@@ -812,7 +833,7 @@ function labels(){
 function usersPage(){
   const l=[...S.users].sort((a,b)=>(a.role==="pending"?0:1)-(b.role==="pending"?0:1)||a.email.localeCompare(b.email));
   const main=u=>u.id===ADMIN_UID,self=u=>u.id===ME.uid;
-  return ph("Користувачі","👤","Схвалення доступу й ролі: перегляд, технік, адмін")+
+  return ph("Користувачі","👤","Схвалення доступу й ролі: перегляд, технік, адмін")+(ME.sup?`<div class=row style="margin-bottom:10px"><button class=p data-a=usernew>＋ Створити обліковий запис</button></div>`:"")+
   `<div class=card><div class=ch><table>${l.map(u=>`<tr><td>${esc(u.name)}<div class=mu>${esc(u.email)}</div></td><td>${main(u)||self(u)?`<span class=tag>${ROLES[u.role]||u.role}</span>`:`<select data-ur="${esc(u.id)}">${Object.entries(ROLES).map(([k,v])=>`<option value=${k} ${u.role===k?"selected":""}>${v}</option>`).join("")}</select>`}</td><td>${u.active?'<span class="tag o">активний</span>':'<span class="tag e">вимкнений</span>'}</td><td>${main(u)||self(u)?"":`<button data-a=tgl data-id="${esc(u.id)}">${u.active?"⏸ Вимкнути":"▶ Увімкнути"}</button>${ME.sup?`<button data-a=pwr data-id="${esc(u.id)}" title="Надіслати лист для зміни пароля">✉ Пароль</button>`:""}`}</td></tr>`).join("")}</table></div></div><p class=mu>Нові користувачі реєструються самі й отримують статус «очікує». Призначте їм роль, щоб відкрити доступ.</p>`;
 }
 function authHtml(){
@@ -831,10 +852,11 @@ function render(){
   if(key!==lastKey){if(r.page!==lastKey.split("/")[0])F=freshF();if(r.page==="d")TAB="info";lastKey=key}
   watchFiles(r.page==="d"&&canView()?r.id:null);
   $("#who").textContent=(ME.name||ME.email)+" · "+(ROLES[ME.role]||ME.role);
-  const pend=S.users.filter(u=>u.role==="pending"&&u.active).length;
-  const items=[["dash","📊","Статистика"],["printers","🖨️","Принтери"],["laptops","💻","Ноутбуки"],["stock","📦","Склад"]];
+  const pend=S.users.filter(u=>u.role==="pending"&&u.active).length,oreq=S.requests.filter(x=>x.status==="нова"||x.status==="в роботі").length;
+  const items=[["dash","📊","Статистика"],["printers","🖨️","Принтери"],["laptops","💻","Ноутбуки"],["stock","📦","Склад"],["requests","⚠️","Заявки"+(oreq?" ("+oreq+")":"")]];
   if(canEdit())items.push(["labels","🏷️","Етикетки"]);
   items.push(["reports","📈","Звіти"]);
+  if(isAdmin())items.push(["inventory","✅","Інвентаризація"],["maint","🛠️","Графік ТО"],["journal","📜","Журнал"]);
   if(isAdmin())items.push(["users","👤","Користувачі"+(pend?" ("+pend+")":"")]);
   const cur=r.page==="d"?((dv(r.id)||{}).kind==="laptop"?"laptops":"printers"):r.page;
   $("#nav").innerHTML=items.map(x=>`<button data-v=${x[0]} class="${cur===x[0]?"on":""}"><span class=ni>${x[1]}</span>${x[2]}</button>`).join("");
@@ -845,6 +867,10 @@ function render(){
   else if(r.page==="d")h=devPage(r.id);
   else if(r.page==="stock")h=stockPage();
   else if(r.page==="reports")h=reports();
+  else if(r.page==="requests")h=requestsPage();
+  else if(r.page==="inventory"&&isAdmin())h=inventoryPage();
+  else if(r.page==="maint"&&isAdmin())h=maintPage();
+  else if(r.page==="journal"&&isAdmin())h=journalPage();
   else if(r.page==="labels"&&canEdit())h=labels();
   else if(r.page==="users"&&isAdmin())h=usersPage();
   else h=dash();
@@ -861,7 +887,8 @@ function formDev(d={}){
   <div class=row>${fld("Серійний номер","f3",d.sn,"text","maxlength=80")}${sel("Статус","f4",STATUSES.map(s=>[s,s]),d.status||"на складі")}</div>
   <div class=row>${fld("Розташування","f5",d.loc,"text","list=dl_loc maxlength=80")}${fld("Відповідальний","f6",d.resp,"text","list=dl_resp maxlength=80")}</div>
   ${!pr?`<div class=row>${fld("Закріплено за (номер)","f11",d.assign,"text","list=dl_asg maxlength=60")}</div>`:""}
-  ${pr?`<div class=row>${fld("IP","f7",d.ip,"text","maxlength=60")}${fld("Картридж","f8",d.cart,"text","maxlength=100")}${fld("Лічильник, стор.","f9",d.cnt||"","number","min=0")}</div>`:""}
+  ${pr?`<div class=row>${fld("IP","f7",d.ip,"text","maxlength=60")}${fld("Картридж","f8",d.cart,"text","maxlength=100")}${fld("Лічильник, стор.","f9",d.cnt||"","number","min=0")}</div>
+  <div class=row>${fld("Навантаження, стор./міс.","f12",d.load||(d.id?"":""),"number","min=0 placeholder=\""+(parseLoad(d.note)||"із нотатки")+"\"")}${fld("Ресурс картриджа, стор.","f13",d.res||"","number","min=0")}${fld("Остання заміна/заправка","f14",d.cdate||"","date")}</div>`:""}
   ${fld("Нотатка","f10",d.note,"text","maxlength=300")}
   <div class=row style="margin-top:12px"><button class=p data-a=savedev data-id="${esc(d.id||"")}" data-k="${kind}">Зберегти</button><button data-a=x>Скасувати</button></div>`);
 }
@@ -905,12 +932,15 @@ document.addEventListener("click",async e=>{
   else if(a==="edit"&&dev)formDev(dev);
   else if(a==="savedev"){
     const old=id?dv(id):null,kind=old?old.kind:b.dataset.k,pr=kind==="printer";
-    const o={kind,tag:val("f1").slice(0,60),model:val("f2").slice(0,80),sn:val("f3").slice(0,80),status:val("f4"),loc:val("f5").slice(0,80),resp:val("f6").slice(0,80),ip:pr?val("f7").slice(0,60):"",cart:pr?val("f8").slice(0,100):"",cnt:pr?Math.max(0,num(val("f9"))):0,lastInv:old?old.lastInv||"":"",note:val("f10").slice(0,300),ts:old?old.ts:Date.now()};
+    const o={...(old?(({id:_i,...r})=>r)(old):{}),kind,tag:val("f1").slice(0,60),model:val("f2").slice(0,80),sn:val("f3").slice(0,80),status:val("f4"),loc:val("f5").slice(0,80),resp:val("f6").slice(0,80),ip:pr?val("f7").slice(0,60):"",cart:pr?val("f8").slice(0,100):"",cnt:pr?Math.max(0,num(val("f9"))):0,lastInv:old?old.lastInv||"":"",note:val("f10").slice(0,300),ts:old?old.ts:Date.now()};
     if(!pr)o.assign=val("f11").slice(0,60);
+    if(pr){const l=num(val("f12")),rs=num(val("f13")),cd=val("f14");if(l>0)o.load=l;else delete o.load;if(rs>0)o.res=rs;else delete o.res;if(cd){o.cdate=cd;if(!old||old.cdate!==cd){o.cnt0=o.cnt}}else{delete o.cdate;delete o.cnt0}}
     if(!o.model)return alert("Вкажіть модель");
     if(o.tag&&S.devices.some(x=>x.id!==id&&(x.tag||"").toLowerCase()===o.tag.toLowerCase()))return alert("Пристрій з таким інвентарним номером уже є");
     const nid=id||newId();
     await setDoc(doc(fdb,"devices",nid),o);
+    log(old?"Редагування":"Новий пристрій",dname(o)+(o.tag?" ("+o.tag+")":""));
+    if(pr&&o.cnt>0&&(!old||num(old.cnt)!==o.cnt))recCounter(nid,o.cnt,today());
     if(!old)await addEvent(nid,"edit","Пристрій додано",{resp:o.resp});
     else{
       if(old.status!==o.status)await addEvent(nid,"status","Статус: "+old.status+" → "+o.status,{resp:o.resp});
@@ -926,6 +956,7 @@ document.addEventListener("click",async e=>{
     if(!target)return alert("Вкажіть, кому або куди видається пристрій");
     const upd=kind==="person"?{status:"в роботі",resp:target}:{status:"в роботі",loc:target,resp:""};
     await patchDevice(id,upd);
+    log("Видача",dname(dev)+" → "+target);
     await addEvent(id,"checkout",(kind==="person"?"Видано співробітнику: ":"Переміщено в кабінет: ")+target+(cm?". "+cm:""),{date,resp:upd.resp??""});
     d.close();
   }
@@ -934,6 +965,7 @@ document.addEventListener("click",async e=>{
     if(dev.status!=="в роботі")return alert("Прийняти можна лише пристрій зі статусом «в роботі».");
     const date=val("i1")||today(),cm=val("i2"),from=dev.resp||dev.loc||"—";
     await patchDevice(id,{status:"на складі",resp:""});
+    log("Прийом",dname(dev)+" ← "+from);
     await addEvent(id,"checkin","Прийнято від: "+from+(cm?". "+cm:""),{date,resp:dev.resp});
     d.close();
   }
@@ -942,6 +974,7 @@ document.addEventListener("click",async e=>{
     const ns=val("t1"),cm=val("t2");if(!ns)return;
     const upd={status:ns};if(ns==="на складі")upd.resp="";
     await patchDevice(id,upd);
+    log("Статус",dname(dev)+": "+dev.status+" → "+ns);
     await addEvent(id,"status","Статус: "+dev.status+" → "+ns+(cm?". "+cm:""),{resp:dev.resp});
     d.close();
   }
@@ -949,11 +982,15 @@ document.addEventListener("click",async e=>{
   else if(a==="savewk"&&dev){
     const sub=val("w1"),date=val("w2")||today(),cost=Math.min(999999,Math.max(0,num(val("w3")))),tx=val("w4").slice(0,200),cnt=num(val("w5"));
     await addEvent(id,"work",sub+(tx?": "+tx:""),{sub,date,cost,resp:dev.resp});
-    if(dev.kind==="printer"&&cnt>0)await patchDevice(id,{cnt});
+    const cart=sub==="Заміна картриджа"||sub==="Заправка";
+    if(dev.kind==="printer"){const u={};if(cnt>0)u.cnt=cnt;if(cart){u.cdate=date;u.cnt0=cnt>0?cnt:num(dev.cnt)}if(Object.keys(u).length)await patchDevice(id,u);if(cnt>0)recCounter(id,cnt,date)}
+    if(sub==="Профілактика (ТО)"&&S.maint.some(m=>m.id===id))await patchMaint(id,{last:date});
+    log("Робота",dname(dev)+": "+sub+(cost?" · "+uah(cost):""));
     d.close();
   }
   else if(a==="inv"&&dev){
     await patchDevice(id,{lastInv:new Date().toISOString()});
+    log("Звірка",dname(dev));
     await addEvent(id,"inventory","Звірено з наявністю",{resp:dev.resp});
   }
   else if(a==="lab"&&dev)previewLabel(id);
@@ -963,6 +1000,7 @@ document.addEventListener("click",async e=>{
     for(const e of S.events.filter(x=>x.did===id))await deleteDoc(doc(fdb,"events",e.id));
     for(const f of S.files)await deleteDoc(doc(fdb,"files",f.id));
     await deleteDoc(doc(fdb,"devices",id));
+    log("Видалення пристрою",dname(dev)+(dev.tag?" ("+dev.tag+")":""));
     location.hash="#/"+KINDS[dev.kind].route;
   }
   else if(a==="delf"){if(confirm("Видалити файл?"))await deleteDoc(doc(fdb,"files",id))}
@@ -975,14 +1013,14 @@ document.addEventListener("click",async e=>{
     const old=id?S.stock.find(x=>x.id===id):null,nm=val("k1").slice(0,100),qty=Math.max(0,num(val("k2"))),mn=Math.max(0,num(val("k3")));
     if(!nm)return alert("Вкажіть назву");
     if(S.stock.some(x=>x.id!==id&&x.name.trim().toLowerCase()===nm.toLowerCase()))return alert("Матеріал з такою назвою вже є");
-    await setDoc(doc(fdb,"stock",id||newId()),{name:nm,qty,min:mn,ts:old?old.ts:Date.now()});d.close();
+    await setDoc(doc(fdb,"stock",id||newId()),{name:nm,qty,min:mn,ts:old?old.ts:Date.now()});log(old?"Склад: зміна":"Склад: новий",nm+" · "+qty+" шт."+(old&&num(old.qty)!==qty?" (було "+old.qty+")":""));d.close();
   }
-  else if(a==="dels"){if(confirm("Видалити матеріал?")){await deleteDoc(doc(fdb,"stock",id));d.close()}}
+  else if(a==="dels"){if(confirm("Видалити матеріал?")){const s0=S.stock.find(x=>x.id===id);await deleteDoc(doc(fdb,"stock",id));log("Склад: видалення",s0?s0.name:id);d.close()}}
   else if(a==="stp"||a==="stm"){
     const s=S.stock.find(x=>x.id===id);if(!s)return;
     const q=Math.max(0,Math.round((num(s.qty)+(a==="stp"?1:-1))*100)/100);
     if(q===num(s.qty))return;
-    await setDoc(doc(fdb,"stock",id),{qty:q},{merge:true});
+    await setDoc(doc(fdb,"stock",id),{qty:q},{merge:true});log("Склад: "+(a==="stp"?"+1":"−1"),s.name+" → "+q);
   }
   else if(a==="imp"){
     if(!LOADED.dev||!LOADED.stk)return alert("Дані ще завантажуються, зачекайте кілька секунд.");
@@ -994,16 +1032,16 @@ document.addEventListener("click",async e=>{
     try{
       for(const [i,x] of nd.entries()){const {id:sid,...o}=x;await setDoc(doc(fdb,"devices",sid),{...o,lastInv:"",ts:ts+i})}
       for(const [i,x] of ns.entries()){const {id:sid,...o}=x;await setDoc(doc(fdb,"stock",sid),{...o,ts:ts+i})}
-      alert("Готово. Імпортовано: принтерів — "+nd.length+", матеріалів — "+ns.length+".");
+      log("Імпорт","принтерів "+nd.length+", матеріалів "+ns.length);alert("Готово. Імпортовано: принтерів — "+nd.length+", матеріалів — "+ns.length+".");
     }finally{b.disabled=false}
   }
   else if(a==="pwr"){
     const u=S.users.find(x=>x.id===id);if(!u||!ME.sup)return;
     if(!confirm("Надіслати "+u.email+" лист для зміни пароля?"))return;
-    await sendPasswordResetEmail(auth,u.email);
+    await sendPasswordResetEmail(auth,u.email);log("Пароль: лист скидання",u.email);
     alert("Лист надіслано на "+u.email+". Користувач сам задасть новий пароль за посиланням у листі (перевірте також «Спам»).");
   }
-  else if(a==="tgl"){const u=S.users.find(x=>x.id===id);if(u&&id!==ADMIN_UID&&id!==ME.uid)await setDoc(doc(fdb,"users",id),{active:!u.active},{merge:true})}
+  else if(a==="tgl"){const u=S.users.find(x=>x.id===id);if(u&&id!==ADMIN_UID&&id!==ME.uid){await setDoc(doc(fdb,"users",id),{active:!u.active},{merge:true});log("Користувач: "+(u.active?"вимкнено":"увімкнено"),u.email)}}
   }catch(x){fail(x)}
 });
 document.addEventListener("change",async e=>{
@@ -1013,7 +1051,7 @@ document.addEventListener("change",async e=>{
   if(t.dataset.lb){t.checked?LB.add(t.dataset.lb):LB.delete(t.dataset.lb);render();return}
   if(t.dataset.ur&&isAdmin()){
     if(t.dataset.ur===ADMIN_UID||t.dataset.ur===ME.uid){render();return}
-    try{await setDoc(doc(fdb,"users",t.dataset.ur),{role:t.value},{merge:true})}catch(x){fail(x)}return}
+    try{const u0=S.users.find(x=>x.id===t.dataset.ur);await setDoc(doc(fdb,"users",t.dataset.ur),{role:t.value},{merge:true});log("Користувач: роль",(u0?u0.email:t.dataset.ur)+" → "+(ROLES[t.value]||t.value))}catch(x){fail(x)}return}
   if(t.id==="fu"&&t.files[0]&&canEdit()){const id=route().id;await uploadFile(t.files[0],id);t.value=""}
 });
 document.addEventListener("input",e=>{if(e.target.id==="q"){F.q=e.target.value;render()}});
@@ -1027,10 +1065,380 @@ function start(){
     onSnapshot(collection(fdb,"devices"),sn=>{S.devices=sn.docs.map(d=>({...d.data(),id:d.id}));LOADED.dev=true;render()},e=>alert("Помилка доступу до бази: "+(e.code||e.message)));
     onSnapshot(collection(fdb,"stock"),sn=>{S.stock=sn.docs.map(d=>({...d.data(),id:d.id}));LOADED.stk=true;render()},()=>{});
     onSnapshot(collection(fdb,"events"),sn=>{S.events=sn.docs.map(d=>({...d.data(),id:d.id}));render()},()=>{});
+    onSnapshot(collection(fdb,"requests"),sn=>{S.requests=sn.docs.map(d=>({...d.data(),id:d.id}));render()},()=>{});
+  }
+  if(isAdmin()){
+    onSnapshot(query(collection(fdb,"audit"),orderBy("ts","desc"),limit(300)),sn=>{S.audit=sn.docs.map(d=>({...d.data(),id:d.id}));if(route().page==="journal")render()},()=>{});
+    onSnapshot(collection(fdb,"counters"),sn=>{S.counters=sn.docs.map(d=>({...d.data(),id:d.id}));if(route().page==="d")render()},()=>{});
+    onSnapshot(collection(fdb,"maint"),sn=>{S.maint=sn.docs.map(d=>({...d.data(),id:d.id}));render()},()=>{});
+    onSnapshot(doc(fdb,"inv","session"),sn=>{S.inv=sn.exists()?sn.data():null;render()},()=>{});
   }
   if(isAdmin())onSnapshot(collection(fdb,"users"),sn=>{S.users=sn.docs.map(d=>({...d.data(),id:d.id})).filter(u=>u.id!==ADMIN_UID);render()},()=>{});
 }
 
+
+/* ============ НОВІ МОЖЛИВОСТІ: прогноз, сумісні матеріали, сканер, інвентаризація, заявки, ТО, журнал ============ */
+const addDays=(s,n)=>ymd(new Date(new Date(s+"T12:00:00").getTime()+n*864e5));
+const daysBetween=(a,b)=>Math.round((new Date(b+"T12:00:00")-new Date(a+"T12:00:00"))/864e5);
+const dtime=ts=>{const d=new Date(ts);return fmt(ymd(d))+" "+p2(d.getHours())+":"+p2(d.getMinutes())};
+
+/* ---------- прогноз картриджа ---------- */
+function parseLoad(n){
+  const m=String(n||"").match(/~\s*([\d\s]+?)(?:\s*[–-]\s*([\d\s]+?))?\s*стор/i);
+  if(!m)return 0;
+  const a=num(m[1].replace(/\s/g,"")),b=m[2]?num(m[2].replace(/\s/g,"")):a;
+  return Math.round((a+b)/2);
+}
+function loadOf(d){return num(d.load)||parseLoad(d.note)}
+function forecast(d){
+  if(!d||d.kind!=="printer"||d.status!=="в роботі")return null;
+  const ld=loadOf(d),res=num(d.res);
+  if(!ld||!res||!d.cdate)return null;
+  const rate=ld/30,byTime=rate*Math.max(0,daysBetween(d.cdate,today()));
+  const byCnt=("cnt0" in d&&num(d.cnt)>0&&num(d.cnt)>=num(d.cnt0))?num(d.cnt)-num(d.cnt0):0;
+  const used=Math.max(byTime,byCnt),left=res-used,days=Math.round(left/rate);
+  return {days,left:Math.round(left),date:addDays(today(),Math.max(0,days))};
+}
+function fcTag(f){
+  if(f.days<=0)return `<span class="tag e">пора міняти</span>`;
+  return `<span class="tag ${f.days<=14?"e":f.days<=30?"w":"o"}">≈ ${f.days} дн.</span> <span class=mu>до ${fmt(f.date)}</span>`;
+}
+function forecastList(){
+  return S.devices.map(d=>({d,f:forecast(d)})).filter(x=>x.f&&x.f.days<=30).sort((a,b)=>a.f.days-b.f.days);
+}
+
+/* ---------- сумісні матеріали ---------- */
+const normTok=t=>{t=t.toLowerCase();const m=t.match(/^e0*(\d+)$/);return m?"e"+m[1]:t};
+const toks=s=>String(s||"").split(/[^0-9a-zA-Zа-яА-Я]+/).map(normTok).filter(t=>t.length>=3);
+function compat(d){
+  const ct=toks(d.cart).filter(t=>/\d/.test(t));
+  if(!ct.length)return [];
+  return S.stock.filter(s=>{const st=toks(s.name);return ct.some(t=>st.includes(t))})
+    .sort((a,b)=>(isR(b)-isR(a))||a.name.localeCompare(b.name,"uk"));
+}
+function compatCard(d){
+  if(d.kind!=="printer"||!d.cart)return "";
+  const l=compat(d);
+  return `<div class=card><b>Сумісні матеріали на складі</b><p class=mu>За полем «Картридж»: ${esc(d.cart)}</p>${l.length?`<div class=ch><table><tr><th>Назва</th><th>Залишок</th></tr>${l.map(s=>`<tr><td>${esc(s.name)} ${isR(s)?'<span class="tag g">замінник</span>':'<span class="tag">оригінал</span>'}${isR(s)&&num(s.qty)<=num(s.min)?' <span class="tag e">мало</span>':""}</td><td><b>${esc(s.qty)}</b></td></tr>`).join("")}</table></div>`:`<p class=mu>Збігів на складі не знайдено. Перевірте назву картриджа або додайте матеріал на склад.</p>`}</div>`;
+}
+
+/* ---------- лічильник (історія, лише адмін) ---------- */
+async function recCounter(did,cnt,date){
+  try{await addDoc(collection(fdb,"counters"),{did,cnt:num(cnt),date:date||today(),by:byName(),ts:Date.now()})}catch(e){}
+}
+function counterTab(d){
+  const l=S.counters.filter(c=>c.did===d.id).sort((a,b)=>a.date.localeCompare(b.date)||a.ts-b.ts);
+  let chart="",rate=0;
+  if(l.length>=2){
+    const W=600,H=170,px=36,py=18,mn=Math.min(...l.map(x=>x.cnt)),mx=Math.max(...l.map(x=>x.cnt)),sp=Math.max(1,mx-mn);
+    const t0=new Date(l[0].date).getTime(),t1=new Date(l[l.length-1].date).getTime(),ts=Math.max(1,t1-t0);
+    const X=c=>px+(new Date(c.date).getTime()-t0)/ts*(W-px-10),Y=c=>H-py-(c.cnt-mn)/sp*(H-2*py);
+    const pts=l.map(c=>X(c).toFixed(1)+","+Y(c).toFixed(1)).join(" ");
+    chart=`<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;max-height:220px" role=img aria-label="Графік лічильника"><line x1=${px} y1=${H-py} x2=${W-10} y2=${H-py} stroke="var(--bd)"/><polyline fill=none stroke="var(--ac)" stroke-width=2.5 points="${pts}"/>${l.map(c=>`<circle cx=${X(c).toFixed(1)} cy=${Y(c).toFixed(1)} r=4 fill="var(--ac)"><title>${fmt(c.date)}: ${c.cnt}</title></circle>`).join("")}<text x=4 y=${py} font-size=11 fill="var(--mu)">${mx}</text><text x=4 y=${H-py} font-size=11 fill="var(--mu)">${mn}</text><text x=${px} y=${H-2} font-size=11 fill="var(--mu)">${fmt(l[0].date)}</text><text x=${W-10} y=${H-2} font-size=11 text-anchor=end fill="var(--mu)">${fmt(l[l.length-1].date)}</text></svg>`;
+    const days=daysBetween(l[0].date,l[l.length-1].date);
+    if(days>=7)rate=Math.round((l[l.length-1].cnt-l[0].cnt)/days*30);
+  }
+  const rows=[...l].reverse().map((c,i,arr)=>{const prev=arr[i+1];return `<tr><td>${fmt(c.date)}</td><td><b>${c.cnt}</b></td><td class=mu>${prev?"+"+(c.cnt-prev.cnt):""}</td><td class=mu>${esc(c.by)}</td></tr>`}).join("");
+  return `<div class=card><div class=row style="margin-bottom:8px"><button class=p data-a=cntadd data-id="${esc(d.id)}">＋ Записати лічильник</button></div>${rate?`<p class=mu>Фактичне навантаження за записами: <b>≈ ${rate} стор./міс.</b>${loadOf(d)?` (у картці вказано ${loadOf(d)})`:""}</p>`:""}${chart||'<p class=mu>Для графіка потрібно щонайменше 2 записи. Записи додаються автоматично при зміні лічильника в картці чи в роботі, або кнопкою вище.</p>'}${l.length?`<div class=ch><table><tr><th>Дата</th><th>Стор.</th><th>Приріст</th><th>Хто</th></tr>${rows}</table></div>`:""}</div>`;
+}
+
+/* ---------- аналітика витрат (адмін) ---------- */
+function costAnalytics(ws,sum){
+  const grp=fn=>{const m={};ws.forEach(e=>{const k=fn(e)||"—";m[k]=(m[k]||0)+num(e.cost)});return Object.entries(m)};
+  const byM=grp(e=>e.date.slice(0,7)).sort((a,b)=>a[0].localeCompare(b[0])).map(([k,v])=>[k.split("-").reverse().join("."),v]);
+  const byT=grp(e=>e.sub||"Інше").sort((a,b)=>b[1]-a[1]);
+  const byD=grp(e=>dname(dv(e.did))).sort((a,b)=>b[1]-a[1]).slice(0,5);
+  const byK=grp(e=>((dv(e.did)||{}).kind==="laptop")?"Ноутбуки":"Принтери").sort((a,b)=>b[1]-a[1]);
+  return `<h3 style="margin:18px 0 8px">Аналітика витрат <span class="tag g">лише адміни</span></h3><p class=mu>За обраний період: ${uah(sum)}. Враховуються лише роботи з вказаною вартістю.</p>
+  <div class=grid2><div class=card><b>За місяцями</b>${hbars(byM,uah)}</div><div class=card><b>За типом робіт</b>${hbars(byT,uah)}</div><div class=card><b>Найдорожчі пристрої (топ-5)</b>${hbars(byD,uah)}</div><div class=card><b>Принтери та ноутбуки</b>${hbars(byK,uah)}</div></div>`;
+}
+
+/* ---------- заявки на несправності ---------- */
+function devReqs(id){
+  const l=S.requests.filter(r=>r.did===id&&(r.status==="нова"||r.status==="в роботі"));
+  if(!l.length)return "";
+  return `<div class=card style="border-color:var(--wr)"><b>Відкриті заявки (${l.length})</b>${l.map(r=>`<div class=ev><div class=evd>${dtime(r.ts).slice(0,10)}</div><div><span class="tag w">${esc(r.status)}</span> ${esc(r.title)}<div class=mu>${esc(r.by)}</div></div></div>`).join("")}</div>`;
+}
+const rqTag=s=>`<span class="tag ${s==="нова"?"e":s==="в роботі"?"w":s==="виконано"?"o":"g"}">${esc(s)}</span>`;
+function requestsPage(){
+  const all=[...S.requests].sort((a,b)=>b.ts-a.ts);
+  const cnt=k=>k==="all"?all.length:k==="open"?all.filter(r=>r.status==="нова"||r.status==="в роботі").length:all.filter(r=>r.status===k).length;
+  const chips=[["open","Відкриті"],["нова","Нові"],["в роботі","В роботі"],["виконано","Виконані"],["відхилено","Відхилені"],["all","Усі"]];
+  const l=all.filter(r=>RQF==="all"||(RQF==="open"?(r.status==="нова"||r.status==="в роботі"):r.status===RQF));
+  const ce=canEdit();
+  return ph("Заявки","⚠️","Повідомлення про несправності")+
+  `<div class=row style="margin-bottom:10px"><button class=p data-a=rqnew>＋ Нова заявка</button></div>
+  <div class=chips>${chips.map(c=>`<button data-rf="${c[0]}" class="${RQF===c[0]?"on":""}">${c[1]} <span>${cnt(c[0])}</span></button>`).join("")}</div>
+  <div class=grid>${l.map(r=>{const d=dv(r.did);return `<div class="card" style="margin:0"><div class=row style="justify-content:space-between;flex-wrap:nowrap"><b style="flex:1">${esc(r.title)}</b>${rqTag(r.status)}</div><div class=mu><a href="#/d/${esc(r.did)}" style="text-decoration:underline">${esc(dname(d))}</a>${d&&d.loc?" · "+esc(d.loc):""}</div>${r.text?`<p style="margin:8px 0">${esc(r.text)}</p>`:""}<div class=mu>${esc(r.by)} · ${dtime(r.ts)}</div>${r.note?`<div class=mu style="margin-top:6px">Примітка: ${esc(r.note)}</div>`:""}${ce?`<div class=row style="margin-top:10px;flex-wrap:nowrap"><select data-rs="${esc(r.id)}" aria-label="Статус">${RQ_ST.map(s=>`<option ${r.status===s?"selected":""}>${s}</option>`).join("")}</select><button data-a=rqnote data-id="${esc(r.id)}" title="Примітка">✎</button>${isAdmin()?`<button class=d data-a=rqdel data-id="${esc(r.id)}" title="Видалити">✕</button>`:""}</div>`:""}</div>`}).join("")||"<p class=mu>Заявок немає</p>"}</div>`;
+}
+function formRequest(did){
+  const ds=[...S.devices].sort((a,b)=>(a.kind+a.model).localeCompare(b.kind+b.model,"uk"));
+  dlg(`<h3>Повідомити про несправність</h3>${sel("Пристрій","q1",ds.map(d=>[d.id,KINDS[d.kind].icon+" "+dname(d)+(d.loc?" — "+d.loc:"")]),did||(ds[0]||{}).id)}${fld("Коротко, що сталося","q2","","text","maxlength=100")}<label for=q3>Подробиці</label><textarea id=q3 rows=3 maxlength=500></textarea><div class=row style="margin-top:12px"><button class=p data-a=rqsave>Надіслати</button><button data-a=x>Скасувати</button></div>`);
+}
+
+/* ---------- графік ТО (адмін) ---------- */
+function maintDue(){
+  const t=today();
+  return S.maint.map(m=>{
+    const d=dv(m.id),next=m.last?addDays(m.last,num(m.every)):t,days=daysBetween(t,next);
+    return {m,d,next,days,over:days<0,soon:days>=0&&days<=14};
+  }).filter(x=>x.d).sort((a,b)=>a.days-b.days);
+}
+const patchMaint=(id,u)=>setDoc(doc(fdb,"maint",id),{...u,ts:Date.now()},{merge:true});
+function maintPage(){
+  const l=maintDue(),over=l.filter(x=>x.over).length;
+  return ph("Графік ТО","🛠️","Планове технічне обслуговування (бачать лише адміни)")+
+  `<div class=row style="margin-bottom:10px"><button class=p data-a=mtadd>＋ Додати пристрій у графік</button></div>
+  ${over?`<p><span class="tag e">прострочено: ${over}</span></p>`:""}
+  <div class=card><div class=ch><table><tr><th>Пристрій</th><th>Кожні, дн.</th><th>Остання ТО</th><th>Наступна</th><th></th><th></th></tr>${l.map(x=>`<tr><td><a href="#/d/${esc(x.d.id)}">${esc(dname(x.d))}</a><div class=mu>${esc(x.d.loc||"")}</div></td><td>${x.m.every}</td><td>${x.m.last?fmt(x.m.last):"—"}</td><td>${fmt(x.next)}</td><td>${x.over?`<span class="tag e">прострочено на ${-x.days} дн.</span>`:x.soon?`<span class="tag w">через ${x.days} дн.</span>`:`<span class="tag o">ок</span>`}</td><td><div class=row style="flex-wrap:nowrap;gap:4px;justify-content:flex-end"><button class=p data-a=mtdone data-id="${esc(x.m.id)}">✔ Виконано</button><button data-a=mtedit data-id="${esc(x.m.id)}" title="Змінити">✎</button><button class=d data-a=mtdel data-id="${esc(x.m.id)}" title="Прибрати з графіка">✕</button></div></td></tr>`).join("")||"<tr><td class=mu colspan=6>Графік порожній. Додайте пристрої й вкажіть, як часто потрібне ТО.</td></tr>"}</table></div></div>`;
+}
+function formMaint(id){
+  const cur=id?S.maint.find(m=>m.id===id):null,free=S.devices.filter(d=>!S.maint.some(m=>m.id===d.id)||d.id===id).sort((a,b)=>(a.kind+a.model).localeCompare(b.kind+b.model,"uk"));
+  dlg(`<h3>${cur?"Змінити графік ТО":"Додати в графік ТО"}</h3>${cur?`<p>${esc(dname(dv(id)))}</p><input id=m1 type=hidden value="${esc(id)}">`:sel("Пристрій","m1",free.map(d=>[d.id,KINDS[d.kind].icon+" "+dname(d)]),(free[0]||{}).id)}<div class=row>${fld("Періодичність, днів","m2",cur?cur.every:180,"number","min=1 max=3650")}${fld("Остання ТО (якщо була)","m3",cur?cur.last:"","date")}</div>${fld("Що робити","m4",cur?cur.note:"","text","maxlength=200")}<div class=row style="margin-top:12px"><button class=p data-a=mtsave>Зберегти</button><button data-a=x>Скасувати</button></div>`);
+}
+
+/* ---------- журнал дій (адмін) ---------- */
+function journalPage(){
+  const q=F.q.toLowerCase(),l=S.audit.filter(a=>!q||[a.act,a.text,a.by].join(" ").toLowerCase().includes(q));
+  return ph("Журнал","📜","Хто і що робив на сайті (останні 300 дій, бачать лише адміни)")+
+  `<div class=card><label>Пошук</label><input id=q placeholder="Дія, пристрій, користувач…" value="${esc(F.q)}"></div>
+  <div class=card><div class=ch><table><tr><th>Час</th><th>Хто</th><th>Дія</th><th>Деталі</th></tr>${l.map(a=>`<tr><td style="white-space:nowrap">${dtime(a.ts)}</td><td>${esc(a.by)}</td><td><span class=tag>${esc(a.act)}</span></td><td>${esc(a.text)}</td></tr>`).join("")||"<tr><td class=mu colspan=4>Записів немає</td></tr>"}</table></div></div>`;
+}
+
+/* ---------- інвентаризація (адмін) ---------- */
+const invScope=()=>S.devices.filter(d=>d.status!=="списано"&&d.status!=="втрачено");
+const invDone=d=>!!S.inv&&!!d.lastInv&&Date.parse(d.lastInv)>=S.inv.start;
+function inventoryPage(){
+  const head=ph("Інвентаризація","✅","Скануйте QR-етикетки: пристрій відмічається як перевірений");
+  if(!S.inv)return head+`<div class=card><p>Сесія інвентаризації не розпочата. Після старту скануйте QR-коди пристроїв камерою телефона — тут буде видно, скільки ще залишилось і які пристрої не просканували.</p><p class=mu>Пристроїв у перевірці: ${invScope().length} (без списаних і втрачених).</p><button class=p data-a=invstart>▶ Почати інвентаризацію</button></div>`;
+  const all=invScope(),done=all.filter(invDone),left=all.filter(d=>!invDone(d)),pct=all.length?Math.round(done.length/all.length*100):0;
+  const byLoc={};left.forEach(d=>{(byLoc[d.loc||"Без розташування"]??=[]).push(d)});
+  const row=d=>`<tr><td>${KINDS[d.kind].icon} <a href="#/d/${esc(d.id)}">${esc(dname(d))}</a></td><td class=mu>${esc(d.tag||"без тегу")}</td><td class=mu>${esc(d.loc||"")}</td><td style="text-align:right"><button data-a=invmark data-id="${esc(d.id)}" title="Відмітити вручну">Відмітити</button></td></tr>`;
+  return head+`<div class=card><div class=row style="margin-bottom:10px"><button class=p data-a=scan data-m=inv>📷 Сканувати</button><button data-a=invend>■ Завершити</button></div>
+  <div class=kg style="margin:0 0 10px"><div class="kt k2"><span class=mu>Відскановано</span><b>${done.length}</b></div><div class="kt k4"><span class=mu>Ще просканувати</span><b>${left.length}</b></div><div class=kt><span class=mu>Усього</span><b>${all.length}</b></div></div>
+  <div class=bar><i style="width:${pct}%"></i></div><p class=mu>Початок: ${dtime(S.inv.start)} · виконано ${pct}%</p></div>
+  ${left.length?`<div class=card><b>Не проскановані (${left.length})</b><div class=ch><table>${Object.entries(byLoc).sort((a,b)=>a[0].localeCompare(b[0],"uk")).map(([k,v])=>`<tr><td colspan=4 style="background:var(--bg);font-weight:700">${esc(k)} <span class=mu>(${v.length})</span></td></tr>`+v.sort((a,b)=>a.model.localeCompare(b.model,"uk")).map(row).join("")).join("")}</table></div></div>`:`<div class=card style="border-color:var(--ok)"><b>🎉 Усе просканували!</b><p class=mu>Натисніть «Завершити», щоб закрити сесію.</p></div>`}
+  ${done.length?`<details class=card><summary><b>Відскановані (${done.length})</b></summary><div class=ch><table>${[...done].sort((a,b)=>Date.parse(b.lastInv)-Date.parse(a.lastInv)).map(d=>`<tr><td>${KINDS[d.kind].icon} <a href="#/d/${esc(d.id)}">${esc(dname(d))}</a></td><td class=mu>${esc(d.loc||"")}</td><td class=mu>${dtime(Date.parse(d.lastInv))}</td></tr>`).join("")}</table></div></details>`:""}`;
+}
+async function markScanned(d,manual){
+  if(!isAdmin()||!S.inv)return {ok:false,msg:"Сесія інвентаризації не розпочата"};
+  if(invDone(d))return {ok:false,msg:"Вже відмічено: "+dname(d)};
+  await patchDevice(d.id,{lastInv:new Date().toISOString()});
+  await addEvent(d.id,"inventory","Звірено під час інвентаризації"+(manual?" (вручну)":""),{resp:d.resp});
+  const left=invScope().filter(x=>x.id!==d.id&&!invDone(x)).length;
+  return {ok:true,msg:"✔ "+dname(d)+" — лишилось "+left};
+}
+
+/* ---------- сканер QR ---------- */
+const SC={mode:"open",stream:null,timer:0,det:null,last:"",lastT:0,busy:false,use:"",cv:null};
+const SC_TITLE={open:"Сканування QR",out:"Швидка видача / прийом",inv:"Інвентаризація"};
+function loadJsQR(){
+  if(window.jsQR)return Promise.resolve();
+  const urls=["https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js","https://unpkg.com/jsqr@1.4.0/dist/jsQR.js"];
+  const tryOne=i=>new Promise((ok,no)=>{if(i>=urls.length)return no(new Error("jsQR"));const s=document.createElement("script");s.src=urls[i];s.onload=ok;s.onerror=()=>tryOne(i+1).then(ok,no);document.head.appendChild(s)});
+  return tryOne(0);
+}
+function scMsg(t,cls){const e=$("#scs");if(e){e.textContent=t;e.className="scs "+(cls||"")}}
+async function openScanner(mode){
+  SC.mode=mode;SC.last="";
+  const dgl=$("#scd");
+  dgl.innerHTML=`<h3>${SC_TITLE[mode]}</h3><div class=scbox><video id=scv playsinline muted></video><div class=scfr></div></div><div id=scs class=scs>Запуск камери…</div><div class=row style="margin-top:10px"><input id=scm placeholder="Або введіть інвентарний номер / серійний №"><button data-a=scman>Знайти</button></div><div class=row style="margin-top:10px"><button data-a=scx>Закрити</button></div>`;
+  if(!dgl.open)dgl.showModal();
+  if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){scMsg("Камера недоступна в цьому браузері або сторінка відкрита не через https. Скористайтесь полем нижче.","bad");return}
+  try{
+    SC.stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:"environment"}},audio:false});
+  }catch(e){scMsg("Немає доступу до камери. Дозвольте камеру для сайту в налаштуваннях браузера або скористайтесь полем нижче.","bad");return}
+  const v=$("#scv");if(!v){stopScanner();return}
+  v.srcObject=SC.stream;try{await v.play()}catch(e){}
+  if("BarcodeDetector" in window){try{SC.det=new BarcodeDetector({formats:["qr_code"]})}catch(e){SC.det=null}}
+  if(!SC.det){try{await loadJsQR()}catch(e){scMsg("Не вдалося завантажити модуль розпізнавання QR. Скористайтесь полем нижче.","bad");return}}
+  scMsg(mode==="inv"?"Наведіть камеру на QR-код пристрою":"Наведіть камеру на QR-код на етикетці");
+  scanLoop();
+}
+function stopScanner(){
+  clearTimeout(SC.timer);SC.timer=0;
+  if(SC.stream){SC.stream.getTracks().forEach(t=>t.stop());SC.stream=null}
+  SC.det=null;
+  const d=$("#scd");if(d&&d.open)d.close();
+}
+async function scanLoop(){
+  const v=$("#scv");if(!v||!SC.stream)return;
+  try{
+    if(v.readyState>=2&&!SC.busy){
+      let txt="";
+      if(SC.det){const r=await SC.det.detect(v);if(r&&r[0])txt=r[0].rawValue}
+      else if(window.jsQR){
+        const c=SC.cv||(SC.cv=document.createElement("canvas")),w=v.videoWidth,h=v.videoHeight;
+        if(w&&h){const k=Math.min(1,640/w);c.width=Math.round(w*k);c.height=Math.round(h*k);const x=c.getContext("2d",{willReadFrequently:true});x.drawImage(v,0,0,c.width,c.height);const im=x.getImageData(0,0,c.width,c.height),r=window.jsQR(im.data,im.width,im.height,{inversionAttempts:"dontInvert"});if(r)txt=r.data}
+      }
+      if(txt)await onCode(txt);
+    }
+  }catch(e){}
+  if(SC.stream)SC.timer=setTimeout(scanLoop,160);
+}
+function findByCode(txt){
+  const m=String(txt).match(/#\/d\/([A-Za-z0-9_-]+)/);
+  if(m)return dv(m[1])||null;
+  const t=String(txt).trim().toLowerCase();if(!t)return null;
+  return S.devices.find(d=>(d.tag||"").toLowerCase()===t||(d.sn||"").toLowerCase()===t||d.id===txt.trim())||null;
+}
+async function onCode(txt,manual){
+  const now=Date.now();
+  if(!manual&&txt===SC.last&&now-SC.lastT<3000)return;
+  SC.last=txt;SC.lastT=now;
+  const d=findByCode(txt);
+  if(!d){scMsg("Пристрій не знайдено: "+String(txt).slice(0,60),"bad");return}
+  SC.busy=true;
+  try{
+    if(navigator.vibrate)navigator.vibrate(60);
+    if(SC.mode==="inv"){
+      const r=await markScanned(d,manual);scMsg(r.msg,r.ok?"ok":"bad");
+    }else if(SC.mode==="out"){
+      if(!canEdit()){scMsg("Видача доступна лише техніку або адміністратору","bad");return}
+      stopScanner();
+      if(d.status==="на складі")formCheckout(d);
+      else if(d.status==="в роботі")formCheckin(d);
+      else location.hash="#/d/"+d.id;
+    }else{
+      stopScanner();location.hash="#/d/"+d.id;
+    }
+  }catch(e){scMsg("Помилка: "+(e.code||e.message),"bad")}
+  finally{SC.busy=false}
+}
+$("#scd").addEventListener("close",()=>{clearTimeout(SC.timer);SC.timer=0;if(SC.stream){SC.stream.getTracks().forEach(t=>t.stop());SC.stream=null}});
+
+/* ---------- створення облікових записів (головний адмін) ---------- */
+const genPw=()=>{const c="abcdefghjkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789",a=new Uint32Array(12);crypto.getRandomValues(a);return [...a].map(x=>c[x%c.length]).join("")};
+function formNewUser(){
+  dlg(`<h3>Новий обліковий запис</h3><p class=mu>Створіть пошту й пароль та передайте їх колезі. Лист підтвердження не потрібен.</p>${fld("Ім'я","u1","","text","maxlength=60")}${fld("Email","u2","","email")}<label for=u3>Пароль (від 8 символів)</label><div class=row style="flex-wrap:nowrap"><input id=u3 type=text value="${genPw()}" autocomplete=off><button data-a=gen type=button title="Згенерувати інший" style="flex:0 0 auto">🎲</button></div>${sel("Роль","u4",[["viewer","перегляд"],["tech","технік"],["admin","адмін"]],"viewer")}<div class=row style="margin-top:12px"><button class=p data-a=usersave>Створити</button><button data-a=x>Скасувати</button></div>`);
+}
+
+/* ---------- обробники нових дій ---------- */
+const FEAT_ACTS=["scan","scx","scman","rqnew","rqsave","rqnote","rqdel","invstart","invend","invmark","mtadd","mtsave","mtdone","mtdsave","mtedit","mtdel","cntadd","cntsave","usernew","usersave","gen","copy"];
+document.addEventListener("click",async e=>{
+  const rf=e.target.closest("button[data-rf]");
+  if(rf){RQF=rf.dataset.rf;render();return}
+  const b=e.target.closest("button[data-a]");if(!b)return;
+  const a=b.dataset.a,id=b.dataset.id,dg=$("#dg");
+  if(!FEAT_ACTS.includes(a))return;
+  try{
+    if(a==="scx"){stopScanner();return}
+    if(a==="scan"){
+      const m=b.dataset.m||"open";
+      if(m==="out"&&!canEdit())return alert("Ця дія доступна лише техніку або адміністратору.");
+      if(m==="inv"&&(!isAdmin()||!S.inv))return alert("Спершу почніть інвентаризацію.");
+      openScanner(m);return;
+    }
+    if(a==="scman"){const t=val("scm");if(t)await onCode(t,true);return}
+    if(a==="rqnew"){if(!canView())return;formRequest(id||(route().page==="d"?route().id:""));return}
+    if(a==="rqsave"){
+      const did=val("q1"),title=val("q2").slice(0,100),text=val("q3").slice(0,500);
+      if(!did)return alert("Оберіть пристрій");
+      if(!title)return alert("Опишіть коротко, що сталося");
+      const d0=dv(did);
+      await addDoc(collection(fdb,"requests"),{did,title,text,status:"нова",note:"",by:byName(),ts:Date.now(),upd:Date.now()});
+      log("Заявка",dname(d0)+": "+title);dg.close();location.hash="#/requests";return;
+    }
+    if(a==="rqnote"){
+      if(!canEdit())return;
+      const r=S.requests.find(x=>x.id===id);if(!r)return;
+      const t=prompt("Примітка до заявки:",r.note||"");if(t===null)return;
+      await setDoc(doc(fdb,"requests",id),{note:t.slice(0,300),upd:Date.now()},{merge:true});return;
+    }
+    if(a==="rqdel"){
+      if(!isAdmin())return;
+      if(confirm("Видалити заявку?")){await deleteDoc(doc(fdb,"requests",id));log("Заявка: видалення",id)}return;
+    }
+    if(a==="invstart"){
+      if(!isAdmin())return;
+      await setDoc(doc(fdb,"inv","session"),{start:Date.now(),by:byName()});log("Інвентаризація","старт");return;
+    }
+    if(a==="invend"){
+      if(!isAdmin())return;
+      const left=invScope().filter(d=>!invDone(d)).length;
+      if(!confirm(left?"Ще не просканували: "+left+". Завершити інвентаризацію все одно?":"Завершити інвентаризацію?"))return;
+      stopScanner();
+      await deleteDoc(doc(fdb,"inv","session"));log("Інвентаризація","завершено, не проскановано: "+left);return;
+    }
+    if(a==="invmark"){
+      const d=dv(id);if(!d)return;
+      const r=await markScanned(d,true);if(!r.ok)alert(r.msg);return;
+    }
+    if(a==="mtadd"||a==="mtedit"){if(!isAdmin())return;formMaint(a==="mtedit"?id:"");return}
+    if(a==="mtsave"){
+      if(!isAdmin())return;
+      const did=val("m1"),every=Math.round(num(val("m2"))),last=val("m3"),note=val("m4").slice(0,200);
+      if(!did)return alert("Оберіть пристрій");
+      if(!(every>=1&&every<=3650))return alert("Вкажіть періодичність у днях (1–3650)");
+      await setDoc(doc(fdb,"maint",did),{every,last,note,ts:Date.now()});log("ТО: графік",dname(dv(did))+" · кожні "+every+" дн.");dg.close();return;
+    }
+    if(a==="mtdone"){
+      if(!isAdmin())return;
+      const m=S.maint.find(x=>x.id===id),d=dv(id);if(!m||!d)return;
+      dlg(`<h3>ТО виконано: ${esc(dname(d))}</h3><div class=row>${fld("Дата","t1",today(),"date")}${fld("Вартість, ₴","t2","","number","min=0")}</div>${fld("Що зроблено","t3",m.note||"","text","maxlength=200")}<div class=row style="margin-top:12px"><button class=p data-a=mtdsave data-id="${esc(id)}">Зберегти</button><button data-a=x>Скасувати</button></div>`);return;
+    }
+    if(a==="mtdsave"){
+      if(!isAdmin())return;
+      const d=dv(id);if(!d)return;
+      const date=val("t1")||today(),cost=Math.min(999999,Math.max(0,num(val("t2")))),tx=val("t3").slice(0,200);
+      await addEvent(id,"work","Профілактика (ТО)"+(tx?": "+tx:""),{sub:"Профілактика (ТО)",date,cost,resp:d.resp});
+      await patchMaint(id,{last:date});log("ТО виконано",dname(d));dg.close();return;
+    }
+    if(a==="mtdel"){
+      if(!isAdmin())return;
+      if(confirm("Прибрати пристрій з графіка ТО?")){await deleteDoc(doc(fdb,"maint",id));log("ТО: прибрано з графіка",dname(dv(id)))}return;
+    }
+    if(a==="cntadd"){
+      if(!isAdmin())return;
+      const d=dv(id);if(!d)return;
+      dlg(`<h3>Лічильник: ${esc(dname(d))}</h3><div class=row>${fld("Показник, стор.","n1",d.cnt||"","number","min=0")}${fld("Дата","n2",today(),"date")}</div><div class=row style="margin-top:12px"><button class=p data-a=cntsave data-id="${esc(id)}">Зберегти</button><button data-a=x>Скасувати</button></div>`);return;
+    }
+    if(a==="cntsave"){
+      if(!isAdmin())return;
+      const d=dv(id),c=Math.max(0,Math.round(num(val("n1")))),dt=val("n2")||today();
+      if(!d||!c)return alert("Вкажіть показник лічильника");
+      await recCounter(id,c,dt);await patchDevice(id,{cnt:c});dg.close();return;
+    }
+    if(a==="usernew"){if(!ME.sup)return;formNewUser();return}
+    if(a==="gen"){const i=$("#u3");if(i)i.value=genPw();return}
+    if(a==="copy"){try{await navigator.clipboard.writeText(b.dataset.t||"");b.textContent="✔ Скопійовано"}catch(x){alert("Скопіюйте вручну")}return}
+    if(a==="usersave"){
+      if(!ME.sup)return;
+      const nm=val("u1").slice(0,60),em=val("u2").toLowerCase(),pw=val("u3"),role=val("u4");
+      if(!nm||!em||pw.length<8)return alert("Вкажіть ім'я, email і пароль від 8 символів");
+      if(!["viewer","tech","admin"].includes(role))return;
+      b.disabled=true;
+      const sec=initializeApp(firebaseConfig,"sec"+Date.now());
+      let uid="",em2=em,warn="";
+      try{
+        const sa=getAuth(sec),cr=await createUserWithEmailAndPassword(sa,em,pw);
+        uid=cr.user.uid;em2=cr.user.email||em;
+        await signOut(sa);
+      }catch(x){
+        b.disabled=false;try{await deleteApp(sec)}catch(y){}
+        return alert(x.code==="auth/email-already-in-use"?"Такий email уже зареєстровано.":x.code==="auth/invalid-email"?"Некоректний email.":x.code==="auth/weak-password"?"Пароль надто простий.":"Помилка: "+(x.code||x.message));
+      }
+      try{await deleteApp(sec)}catch(y){}
+      try{await setDoc(doc(fdb,"users",uid),{email:em2,name:nm,role,active:true})}
+      catch(x){warn="Обліковий запис створено, але профіль у базі не записався ("+(x.code||x.message)+"). Перевірте, що опубліковано новий firestore.rules, і призначте роль у списку користувачів."}
+      log("Новий обліковий запис",em2+" · "+(ROLES[role]||role));
+      const cred="Сайт: "+location.origin+location.pathname+"\nЛогін: "+em2+"\nПароль: "+pw;
+      dlg(`<h3>Обліковий запис створено</h3>${warn?`<p style="color:var(--er)">${esc(warn)}</p>`:""}<p class=mu>Передайте дані колезі. Пароль більше не буде показано, але ви завжди можете надіслати лист для його зміни кнопкою «✉ Пароль».</p><pre style="background:var(--bg);border:1px solid var(--bd);border-radius:8px;padding:10px;white-space:pre-wrap;word-break:break-all;user-select:all">${esc(cred)}</pre><div class=row style="margin-top:12px"><button class=p data-a=copy data-t="${esc(cred)}">📋 Копіювати</button><button data-a=x>Закрити</button></div>`);
+      return;
+    }
+  }catch(x){fail(x)}
+});
+document.addEventListener("change",async e=>{
+  const t=e.target;
+  if(t.dataset.rs&&canEdit()){
+    try{
+      const r=S.requests.find(x=>x.id===t.dataset.rs);
+      await setDoc(doc(fdb,"requests",t.dataset.rs),{status:t.value,upd:Date.now()},{merge:true});
+      log("Заявка: статус",(r?r.title:"")+" → "+t.value);
+    }catch(x){fail(x)}
+  }
+});
+document.addEventListener("keydown",e=>{if(e.key==="Enter"&&e.target.id==="scm"){e.preventDefault();const b=document.querySelector("[data-a=scman]");if(b)b.click()}});
 /* ---------- вхід ---------- */
 try{const t=localStorage.getItem("ti_th");if(t)document.documentElement.dataset.theme=t}catch(e){}
 $("#site").textContent=SITE_NAME;document.title=SITE_NAME;
