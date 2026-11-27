@@ -3,57 +3,56 @@ service cloud.firestore {
   match /databases/{database}/documents {
 
     function signedIn() { return request.auth != null; }
+
+    // ВАЖЛИВО: UID головного (супер) адміністратора.
+    // Де взяти: Firebase -> Authentication -> Users -> стовпець «User UID».
+    // Має збігатися з ADMIN_UID у index.html.
+    // Головний адмін НЕ має запису в колекції users, тому інші адміни його не бачать.
+    function mainUid() { return 'imnv01reA1anc22Nkxe36a4erdA3'; }
+    function isSuper() { return signedIn() && request.auth.uid == mainUid(); }
+
     function hasProfile() { return signedIn() && exists(/databases/$(database)/documents/users/$(request.auth.uid)); }
     function me() { return get(/databases/$(database)/documents/users/$(request.auth.uid)).data; }
     function active() { return hasProfile() && me().active == true; }
-    function canView() { return active() && me().role in ['viewer', 'tech', 'admin']; }
-    function canEdit() { return active() && me().role in ['tech', 'admin']; }
-    function isAdmin() { return active() && me().role == 'admin'; }
-
-    // ВАЖЛИВО: вставте UID головного адміністратора між лапками.
-    // Де взяти: Firebase -> Authentication -> Users -> стовпець «User UID».
-    // Має збігатися з ADMIN_UID у config.js.
-    function mainUid() { return 'ВСТАВТЕ_UID_ГОЛОВНОГО_АДМІНА'; }
-    function bootstrap() { return signedIn() && request.auth.uid == mainUid(); }
+    function canView() { return isSuper() || (active() && me().role in ['viewer', 'tech', 'admin']); }
+    function canEdit() { return isSuper() || (active() && me().role in ['tech', 'admin']); }
+    function isAdmin() { return isSuper() || (active() && me().role == 'admin'); }
 
     // ---------- користувачі ----------
     match /users/{uid} {
-      allow read: if signedIn() && (request.auth.uid == uid || isAdmin() || bootstrap());
+      // користувач бачить себе; адміни бачать усіх, крім головного (його запису просто немає)
+      allow read: if signedIn() && (request.auth.uid == uid || isAdmin());
 
-      allow create:
-        // головний адмін створює власний профіль
-        if (bootstrap() && request.auth.uid == uid
-            && request.resource.data.keys().hasOnly(['email','name','role','active'])
-            && request.resource.data.role == 'admin'
-            && request.resource.data.active == true
-            && request.resource.data.email == request.auth.token.email)
-        // самореєстрація: лише статус «очікує схвалення»
-        || (signedIn() && request.auth.uid == uid
+      // самореєстрація: лише статус «очікує схвалення»
+      allow create: if signedIn() && request.auth.uid == uid && uid != mainUid()
             && request.resource.data.keys().hasOnly(['email','name','role','active'])
             && request.resource.data.role == 'pending'
             && request.resource.data.active == true
             && request.resource.data.email == request.auth.token.email
             && request.resource.data.name is string
-            && request.resource.data.name.size() <= 60);
+            && request.resource.data.name.size() <= 60;
 
-      allow update:
-        // адмін змінює лише ім'я, роль і активність інших (не головного)
-        if (isAdmin() && uid != mainUid()
-            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name','role','active']))
-        // головний адмін може відновити власну роль
-        || (bootstrap() && request.auth.uid == uid
-            && request.resource.data.role == 'admin'
+      // головний адмін створює профілі колег (акаунт з паролем створюється на сайті)
+      allow create: if isSuper() && uid != mainUid()
+            && request.resource.data.keys().hasOnly(['email','name','role','active'])
+            && request.resource.data.role in ['pending','viewer','tech','admin']
             && request.resource.data.active == true
-            && request.resource.data.email == resource.data.email);
+            && request.resource.data.email is string && request.resource.data.email.size() <= 120
+            && request.resource.data.name is string && request.resource.data.name.size() <= 60;
 
-      allow delete: if isAdmin() && uid != mainUid();
+      // адмін змінює лише ім'я, роль і активність інших
+      allow update: if isAdmin() && uid != mainUid()
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name','role','active']);
+
+      // адмін видаляє інших; головний адмін може видалити лише свій старий профіль (якщо він ще лишився)
+      allow delete: if (isAdmin() && uid != mainUid()) || (isSuper() && request.auth.uid == uid);
     }
 
     // ---------- пристрої ----------
     match /devices/{id} {
       function validDevice() {
         let d = request.resource.data;
-        return d.keys().hasOnly(['kind','tag','model','sn','status','loc','resp','ip','cart','cnt','lastInv','note','ts'])
+        return d.keys().hasOnly(['kind','tag','model','sn','status','loc','resp','ip','cart','cnt','lastInv','note','ts','assign','res','load','cnt0','cdate'])
           && d.kind in ['printer', 'laptop']
           && d.model is string && d.model.size() > 0 && d.model.size() <= 80
           && d.tag is string && d.tag.size() <= 60
@@ -66,6 +65,11 @@ service cloud.firestore {
           && d.cnt is number && d.cnt >= 0 && d.cnt < 100000000
           && d.lastInv is string && d.lastInv.size() <= 40
           && d.note is string && d.note.size() <= 300
+          && (!('assign' in d) || (d.assign is string && d.assign.size() <= 60))
+          && (!('res' in d) || (d.res is number && d.res >= 0 && d.res < 10000000))
+          && (!('load' in d) || (d.load is number && d.load >= 0 && d.load < 10000000))
+          && (!('cnt0' in d) || (d.cnt0 is number && d.cnt0 >= 0 && d.cnt0 < 100000000))
+          && (!('cdate' in d) || (d.cdate is string && d.cdate.size() <= 10))
           && d.ts is number;
       }
       allow read: if canView();
@@ -85,13 +89,28 @@ service cloud.firestore {
           && d.date is string && d.date.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
           && d.text is string && d.text.size() <= 300
           && d.cost is number && d.cost >= 0 && d.cost < 1000000
-          && d.by == request.auth.token.email
+          && (d.by == request.auth.token.email || (isSuper() && d.by == 'адміністратор'))
           && d.resp is string && d.resp.size() <= 80
           && d.ts is number;
       }
       allow read: if canView();
       allow create: if canEdit() && validEvent();
       allow update: if false;
+      allow delete: if isAdmin();
+    }
+
+    // ---------- склад: витратні матеріали ----------
+    match /stock/{id} {
+      function validStock() {
+        let d = request.resource.data;
+        return d.keys().hasOnly(['name','qty','min','ts'])
+          && d.name is string && d.name.size() > 0 && d.name.size() <= 100
+          && d.qty is number && d.qty >= 0 && d.qty < 1000000
+          && d.min is number && d.min >= 0 && d.min < 1000000
+          && d.ts is number;
+      }
+      allow read: if canView();
+      allow create, update: if canEdit() && validStock();
       allow delete: if isAdmin();
     }
 
@@ -103,13 +122,77 @@ service cloud.firestore {
           && d.did is string && d.did.size() <= 40
           && d.name is string && d.name.size() <= 120
           && d.data is string && d.data.size() <= 900000 && d.data[0:5] == 'data:'
-          && d.by == request.auth.token.email
+          && (d.by == request.auth.token.email || (isSuper() && d.by == 'адміністратор'))
           && d.ts is number;
       }
       allow read: if canView();
       allow create: if canEdit() && validFile();
       allow update: if false;
       allow delete: if canEdit();
+    }
+
+    // ---------- заявки на несправності: створює будь-хто з доступом, статуси міняє технік/адмін ----------
+    match /requests/{id} {
+      function validReq() {
+        let d = request.resource.data;
+        return d.keys().hasOnly(['did','title','text','status','note','by','ts','upd'])
+          && d.did is string && d.did.size() > 0 && d.did.size() <= 40
+          && d.title is string && d.title.size() > 0 && d.title.size() <= 100
+          && d.text is string && d.text.size() <= 500
+          && d.status == 'нова'
+          && d.note is string && d.note.size() <= 300
+          && (d.by == request.auth.token.email || (isSuper() && d.by == 'адміністратор'))
+          && d.ts is number && d.upd is number;
+      }
+      allow read: if canView();
+      allow create: if canView() && validReq();
+      allow update: if canEdit()
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status','note','upd'])
+            && request.resource.data.status in ['нова', 'в роботі', 'виконано', 'відхилено']
+            && request.resource.data.note is string && request.resource.data.note.size() <= 300;
+      allow delete: if isAdmin();
+    }
+
+    // ---------- журнал дій (читає лише адмін, змінювати не можна) ----------
+    match /audit/{id} {
+      allow read: if isAdmin();
+      allow create: if canView()
+            && request.resource.data.keys().hasOnly(['act','text','by','ts'])
+            && request.resource.data.act is string && request.resource.data.act.size() <= 40
+            && request.resource.data.text is string && request.resource.data.text.size() <= 300
+            && (request.resource.data.by == request.auth.token.email || (isSuper() && request.resource.data.by == 'адміністратор'))
+            && request.resource.data.ts is number;
+      allow update, delete: if false;
+    }
+
+    // ---------- історія лічильників принтерів (читає лише адмін) ----------
+    match /counters/{id} {
+      allow read: if isAdmin();
+      allow create: if canEdit()
+            && request.resource.data.keys().hasOnly(['did','cnt','date','by','ts'])
+            && request.resource.data.did is string && request.resource.data.did.size() <= 40
+            && request.resource.data.cnt is number && request.resource.data.cnt >= 0 && request.resource.data.cnt < 100000000
+            && request.resource.data.date.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+            && (request.resource.data.by == request.auth.token.email || (isSuper() && request.resource.data.by == 'адміністратор'))
+            && request.resource.data.ts is number;
+      allow update: if false;
+      allow delete: if isAdmin();
+    }
+
+    // ---------- графік технічного обслуговування (лише адмін) ----------
+    match /maint/{id} {
+      allow read, delete: if isAdmin();
+      allow create, update: if isAdmin()
+            && request.resource.data.keys().hasOnly(['every','last','note','ts'])
+            && request.resource.data.every is number && request.resource.data.every >= 1 && request.resource.data.every <= 3650
+            && request.resource.data.last is string && request.resource.data.last.size() <= 10
+            && request.resource.data.note is string && request.resource.data.note.size() <= 200
+            && request.resource.data.ts is number;
+    }
+
+    // ---------- сесія інвентаризації (лише адмін) ----------
+    match /inv/{id} {
+      allow read, write: if isAdmin();
     }
   }
 }
