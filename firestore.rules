@@ -24,7 +24,9 @@ service cloud.firestore {
       allow read: if signedIn() && (request.auth.uid == uid || isAdmin());
 
       // самореєстрація: лише статус «очікує схвалення»
+      // email має бути підтверджений, щоб ніхто не подав заявку від чужої адреси
       allow create: if signedIn() && request.auth.uid == uid && uid != mainUid()
+            && request.auth.token.email_verified == true
             && request.resource.data.keys().hasOnly(['email','name','role','active'])
             && request.resource.data.role == 'pending'
             && request.resource.data.active == true

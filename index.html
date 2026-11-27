@@ -172,7 +172,7 @@ details.card summary{cursor:pointer}
 <script type="module">
 import {initializeApp,deleteApp} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import {getFirestore,collection,doc,setDoc,addDoc,deleteDoc,onSnapshot,getDoc,query,where,orderBy,limit} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
-import {getAuth,signInWithEmailAndPassword,createUserWithEmailAndPassword,sendPasswordResetEmail,onAuthStateChanged,signOut} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+import {getAuth,signInWithEmailAndPassword,createUserWithEmailAndPassword,sendPasswordResetEmail,sendEmailVerification,updateProfile,onAuthStateChanged,signOut} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 
 /* ============ НАЛАШТУВАННЯ: заповніть значення (див. інструкцію) ============ */
 // Налаштування сайту. Заповніть значення за інструкцією (кроки 5 і 6).
@@ -622,6 +622,7 @@ return {SEED_DEVICES,SEED_STOCK};
 })();
 /* ============ ЛОГІКА САЙТУ ============ */
 const fapp=initializeApp(firebaseConfig),fdb=getFirestore(fapp),auth=getAuth(fapp);
+auth.languageCode="uk"; // листи Firebase (підтвердження email, скидання пароля) українською
 
 /* ---------- довідники ---------- */
 const STATUSES=["в роботі","на складі","в ремонті","списано","втрачено"];
@@ -706,6 +707,29 @@ async function uploadFile(file,did){
 }
 const safeData=s=>/^data:(image\/(jpeg|png|webp|gif)|application\/pdf);base64,[A-Za-z0-9+\/=]+$/.test(s||"");
 
+/* ---------- експорт у CSV (відкривається в Excel) ---------- */
+function downloadCsv(name,rows){
+  // «;» — роздільник, який очікує Excel з українськими регіональними налаштуваннями; BOM — щоб Excel прочитав кирилицю як UTF-8
+  const cell=v=>{if(typeof v==="number")return String(v);let s=String(v??"");if(/^[=+\-@\t\r]/.test(s))s="'"+s;/* захист від формул у клітинках */return /[";\r\n]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s};
+  const blob=new Blob(["﻿"+rows.map(r=>r.map(cell).join(";")).join("\r\n")],{type:"text/csv;charset=utf-8"});
+  const a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download=name+"_"+today()+".csv";
+  document.body.appendChild(a);a.click();setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove()},1000);
+}
+function exportDevices(kind){
+  const pr=kind==="printer";
+  const head=["Інвентарний №","Модель","Серійний №","Статус","Розташування","Відповідальний",...(pr?["IP","Картридж","Лічильник, стор."]:["Закріплено за"]),"Остання звірка","Нотатка"];
+  const rows=listFor(kind).map(d=>[d.tag||"",d.model,d.sn||"",d.status,d.loc||"",d.resp||"",...(pr?[d.ip||"",d.cart||"",num(d.cnt)]:[d.assign||""]),d.lastInv?fmt(d.lastInv):"",d.note||""]);
+  downloadCsv(KINDS[kind].route,[head,...rows]);
+}
+function exportStock(){
+  const l=[...S.stock].sort((a,b)=>(isR(b)-isR(a))||a.name.localeCompare(b.name,"uk"));
+  downloadCsv("sklad",[["Назва","Тип","Кількість","Мін. залишок"],...l.map(s=>[s.name,isR(s)?"замінник":"оригінал",num(s.qty),num(s.min)])]);
+}
+function exportWorks(){
+  const ws=worksInRange();
+  downloadCsv("roboty_"+R.from+"_"+R.to,[["Дата","Пристрій","Інвентарний №","Тип роботи","Опис","Відповідальний","Сума, грн","Хто вніс"],...ws.map(e=>{const d=dv(e.did);return [fmt(e.date),dname(d),d&&d.tag||"",e.sub||"",e.text,e.resp||"",num(e.cost),e.by]})]);
+}
+
 /* ---------- етикетки з QR ---------- */
 const labelHtml=(d,qid)=>`<div class=lbl><div class=hd>${esc(d.tag||"—")}</div><div class=bd><div class=tx><div class=m>${esc(d.model)}</div><div class=r><b>Локація:</b><span>${esc(d.loc||"—")}</span></div><div class=r><b>Серійний №:</b><span>${esc(d.sn||"—")}</span></div></div><div class=qrw id="${qid}"></div></div>${LABEL_FOOTER?`<div class=ft>${esc(LABEL_FOOTER)}</div>`:""}</div>`;
 const qrInto=(d,elId)=>{const el=document.getElementById(elId);if(!el)return;el.innerHTML="";try{new QRCode(el,{text:location.origin+location.pathname+"#/d/"+d.id,width:240,height:240,correctLevel:QRCode.CorrectLevel.M})}catch(e){}};
@@ -760,7 +784,7 @@ function listPage(kind){
   const K=KINDS[kind],l=listFor(kind),ds=S.devices.filter(x=>x.kind===kind);
   return ph(K.many,K.icon,"Усі пристрої цього типу")+
   `<div class="card row"><div><label>Пошук</label><input id=q placeholder="Тег, модель, серійний №, IP…" value="${esc(F.q)}"></div>${fsel("Статус","status",STATUSES)}${fsel("Розташування","loc",uniq(ds.map(x=>x.loc)))}${fsel("Відповідальний","resp",uniq(ds.map(x=>x.resp)))}${fsel("Модель","model",uniq(ds.map(x=>x.model)))}</div>
-  <div class=row style="margin-bottom:8px">${canEdit()?`<button class=p data-a=add data-k=${kind}>＋ ${K.one}</button>`:""}</div>
+  <div class=row style="margin-bottom:8px">${canEdit()?`<button class=p data-a=add data-k=${kind}>＋ ${K.one}</button>`:""}<button data-a=expd data-k=${kind} title="Завантажити поточний список (з урахуванням фільтрів)">⬇ Excel (CSV)</button></div>
   <p class=mu>Знайдено: ${l.length}</p>
   <div class=grid>${l.map(card).join("")||"<p class=mu>Нічого не знайдено</p>"}</div>`;
 }
@@ -794,14 +818,17 @@ function devPage(id){
   }
   return ph(esc(dname(d)),K.icon,esc(d.tag?"№ "+d.tag:""),crumb)+acts+(ce?"":rqb)+`<div class=tabs>${tabs.map(t=>`<button data-tab=${t[0]} class="${TAB===t[0]?"on":""}">${t[1]}</button>`).join("")}</div>`+body;
 }
-function reports(){
+function worksInRange(){
   if(!R.from)R.from=daysAgo(90);if(!R.to)R.to=today();
-  const ws=S.events.filter(e=>e.type==="work"&&e.date>=R.from&&e.date<=R.to&&(!R.kind||(dv(e.did)||{}).kind===R.kind)).sort((a,b)=>b.date.localeCompare(a.date)||b.ts-a.ts);
+  return S.events.filter(e=>e.type==="work"&&e.date>=R.from&&e.date<=R.to&&(!R.kind||(dv(e.did)||{}).kind===R.kind)).sort((a,b)=>b.date.localeCompare(a.date)||b.ts-a.ts);
+}
+function reports(){
+  const ws=worksInRange();
   const sum=ws.reduce((a,e)=>a+num(e.cost),0);
   const grp=fn=>{const m={};ws.forEach(e=>{const k=fn(e)||"—",o=m[k]||(m[k]={n:0,s:0});o.n++;o.s+=num(e.cost)});return Object.entries(m).sort((a,b)=>b[1].s-a[1].s)};
   const gt=(title,rows)=>`<div class=card><b>${title}</b><div class=ch><table><tr><th></th><th>Робіт</th><th>Сума</th></tr>${rows.map(([k,o])=>`<tr><td>${esc(k)}</td><td>${o.n}</td><td>${uah(o.s)}</td></tr>`).join("")||"<tr><td class=mu>Немає даних</td></tr>"}</table></div></div>`;
   return ph("Звіти","📈","Роботи та витрати за період")+
-  `<div class="card row noprint"><div>${fld("Від","r1",R.from,"date","data-r=from")}</div><div>${fld("До","r2",R.to,"date","data-r=to")}</div><div>${sel("Тип","r3",[["","Усі"],["printer","Принтери"],["laptop","Ноутбуки"]],R.kind,"data-r=kind")}</div><button data-a=print>🖨 Друк</button></div>
+  `<div class="card row noprint"><div>${fld("Від","r1",R.from,"date","data-r=from")}</div><div>${fld("До","r2",R.to,"date","data-r=to")}</div><div>${sel("Тип","r3",[["","Усі"],["printer","Принтери"],["laptop","Ноутбуки"]],R.kind,"data-r=kind")}</div><button data-a=print>🖨 Друк</button><button data-a=expw>⬇ Excel (CSV)</button></div>
   <div class=kg><div class=kt><span class=mu>Робіт</span><b>${ws.length}</b></div><div class="kt k3"><span class=mu>Витрати</span><b>${uah(sum)}</b></div><div class="kt k2"><span class=mu>Середня вартість</span><b>${ws.length?uah(sum/ws.length):"—"}</b></div></div>
   <div class=grid2>${gt("За пристроями",grp(e=>dname(dv(e.did))+(dv(e.did)&&dv(e.did).tag?" ("+dv(e.did).tag+")":"")))}${gt("За відповідальними",grp(e=>e.resp))}</div>
   ${isAdmin()?costAnalytics(ws,sum):""}<div class=card><b>Усі роботи</b><div class=ch><table><tr><th>Дата</th><th>Пристрій</th><th>Робота</th><th>Відповідальний</th><th>Сума</th></tr>${ws.map(e=>`<tr><td>${fmt(e.date)}</td><td><a href="#/d/${esc(e.did)}">${esc(dname(dv(e.did)))}</a></td><td>${esc(e.text)}</td><td>${esc(e.resp||"—")}</td><td>${e.cost?uah(e.cost):""}</td></tr>`).join("")||"<tr><td class=mu colspan=5>Немає робіт за цей період</td></tr>"}</table></div></div>`;
@@ -817,7 +844,7 @@ function stockPage(){
   const row=s=>`<tr><td>${esc(s.name)}${isR(s)&&num(s.qty)<=num(s.min)?' <span class="tag e">мало</span>':""}</td><td><b>${esc(s.qty)}</b></td><td class=mu>${esc(s.min)}</td><td>${ce?`<div class=row style="flex-wrap:nowrap;justify-content:flex-end;gap:4px"><button data-a=stm data-id="${esc(s.id)}" aria-label="Зменшити на 1" title="Списати 1">−1</button><button data-a=stp data-id="${esc(s.id)}" aria-label="Збільшити на 1" title="Додати 1">+1</button><button data-a=edits data-id="${esc(s.id)}" aria-label="Редагувати" title="Редагувати">✎</button></div>`:""}</td></tr>`;
   const head=t=>`<tr><td colspan=4 style="background:var(--bg);font-weight:700">${t}</td></tr>`;
   return ph("Склад","📦","Витратні матеріали та їхні залишки")+
-  `<div class=row style="margin-bottom:8px">${ce?`<button class=p data-a=adds>＋ Матеріал</button>`:""}</div>
+  `<div class=row style="margin-bottom:8px">${ce?`<button class=p data-a=adds>＋ Матеріал</button>`:""}<button data-a=exps>⬇ Excel (CSV)</button></div>
   <p class=mu>Позицій: ${l.length}${lowN?` · <span class="tag e">мало: ${lowN}</span>`:""}. Позначка «мало» ставиться лише замінникам, коли залишок не більший за мінімум. Оригінальні фарби не позначаються.</p>
   <div class=card><div class=ch><table><tr><th>Назва</th><th>К-сть</th><th>Мін.</th><th></th></tr>${l.length?(rep.length?head("Замінники")+rep.map(row).join(""):"")+(org.length?head("Оригінал")+org.map(row).join(""):""):"<tr><td class=mu colspan=4>Матеріалів ще немає</td></tr>"}</table></div></div>`;
 }
@@ -840,6 +867,7 @@ function authHtml(){
   const box=h=>`<div class="card auth"><div style="text-align:center;font-weight:700;font-size:18px;margin-bottom:6px">${esc(SITE_NAME)}</div>${h}</div>`;
   if(ST==="load")return `<p class=mu style="text-align:center;margin-top:40px">Завантаження…</p>`;
   if(ST==="register")return box(`<h3>Реєстрація</h3><p class=mu>Після реєстрації адміністратор призначить вам роль.</p>${fld("Ім'я","rn")}${fld("Email","re","","email")}${fld("Пароль (від 8 символів)","rp","","password")}<div class=row style="margin-top:12px"><button class=p data-a=register>Зареєструватися</button><button data-a=tologin>Назад</button></div>`);
+  if(ST==="verify"){const em=auth.currentUser?auth.currentUser.email:"";return box(`<h3>Підтвердьте email</h3><p>На <b>${esc(em)}</b> надіслано лист із посиланням для підтвердження.</p><p class=mu>Відкрийте лист, перейдіть за посиланням, потім натисніть «Я підтвердив». Якщо листа немає кілька хвилин — перевірте «Спам».</p><div class=row style="margin-top:12px"><button class=p data-a=verified>Я підтвердив</button><button data-a=resend>Надіслати ще раз</button></div><p style="margin:12px 0 0"><button data-a=logout>Вийти</button></p>`)}
   if(ST==="noaccess")return box(`<h3>Доступ не надано</h3><p>${NOPROF?"Для цього облікового запису ще не подано заявку.":"Обліковий запис вимкнено. Зверніться до адміністратора."}</p>${NOPROF?`<button class=p data-a=req>Подати заявку на доступ</button> `:""}<button data-a=logout>Вийти</button>${ERR?`<p class=mu>${esc(ERR)}</p>`:""}`);
   return box(`<h3>Вхід</h3>${fld("Email","le","","email")}${fld("Пароль","lp","","password")}<div class=row style="margin-top:12px"><button class=p data-a=login>Увійти</button><button data-a=regform>Реєстрація</button></div><p style="margin:12px 0 0"><a href="#" data-a=forgot class=mu style="text-decoration:underline">Забули пароль?</a></p>`);
 }
@@ -918,10 +946,17 @@ document.addEventListener("click",async e=>{
   if(a==="regform"){ST="register";render();return}
   if(a==="tologin"){ST="login";render();return}
   if(a==="register"){const nm=val("rn"),em=val("re"),pw=val("rp");if(!nm||!em||pw.length<8)return alert("Вкажіть ім'я, email і пароль від 8 символів");REG={name:nm.slice(0,60)};
-    try{await createUserWithEmailAndPassword(auth,em,pw)}catch(x){REG=null;alert(x.code==="auth/email-already-in-use"?"Такий email уже зареєстровано. Спробуйте увійти.":"Помилка: "+(x.code||x.message))}return}
-  if(a==="req"){try{const u=auth.currentUser;await setDoc(doc(fdb,"users",u.uid),{email:u.email,name:(u.email||"").slice(0,60),role:"pending",active:true});location.reload()}catch(x){fail(x)}return}
+    try{const cr=await createUserWithEmailAndPassword(auth,em,pw);try{await updateProfile(cr.user,{displayName:REG.name})}catch(y){}await sendEmailVerification(cr.user)}catch(x){REG=null;alert(x.code==="auth/email-already-in-use"?"Такий email уже зареєстровано. Спробуйте увійти.":"Помилка: "+(x.code||x.message))}return}
+  if(a==="resend"){const u=auth.currentUser;if(!u)return;sendEmailVerification(u).then(()=>alert("Лист надіслано ще раз на "+u.email)).catch(x=>alert(x.code==="auth/too-many-requests"?"Забагато спроб. Зачекайте кілька хвилин.":"Помилка: "+(x.code||x.message)));return}
+  if(a==="verified"||a==="req"){
+    /* профіль-заявку можна створити лише з підтвердженим email (перевіряють і правила Firestore) */
+    try{const u=auth.currentUser;if(!u)return;await u.reload();
+      if(!u.emailVerified){ST="verify";render();return alert("Email ще не підтверджено. Перейдіть за посиланням у листі.")}
+      await u.getIdToken(true);
+      await setDoc(doc(fdb,"users",u.uid),{email:u.email,name:((REG&&REG.name)||u.displayName||u.email||"").slice(0,60),role:"pending",active:true});location.reload()}catch(x){fail(x)}return}
   if(a==="x"){d.close();return}
   if(a==="print"){window.print();return}
+  if(a==="expd"||a==="exps"||a==="expw"){if(!canView())return;a==="expd"?exportDevices(b.dataset.k):a==="exps"?exportStock():exportWorks();return}
   /* усе нижче потребує прав */
   const needEdit=["adds","edits","saves","stp","stm","add","savedev","co","ci","st","wk","inv","lab","edit","saveco","saveci","savest","savewk","delf","lball","lbnone","lbprint","labprint"];
   if(needEdit.includes(a)&&!canEdit())return alert("Ця дія доступна лише техніку або адміністратору.");
@@ -1451,6 +1486,7 @@ onAuthStateChanged(auth,async u=>{
       ME={uid:u.uid,email:u.email,name:"Головний адмін",role:"admin",active:true,sup:true};ST="ok";render();start();return;
     }
     let sn=await getDoc(doc(fdb,"users",u.uid));
+    if(!sn.exists()&&!u.emailVerified){ME=null;ST="verify";render();return}
     if(!sn.exists()&&REG){await setDoc(doc(fdb,"users",u.uid),{email:u.email,name:REG.name,role:"pending",active:true});REG=null;sn=await getDoc(doc(fdb,"users",u.uid))}
     if(!sn.exists()||sn.data().active!==true){NOPROF=!sn.exists();ME=null;ST="noaccess";render();return}
     ME={uid:u.uid,...sn.data()};ST="ok";render();start();
